@@ -220,6 +220,7 @@ local function Refresh()
     Log("display:Show() called — IsShown:", display:IsShown(),
         "W:", display:GetWidth(), "H:", display:GetHeight(),
         "x:", db.x, "y:", db.y)
+end
 
 -- ── Combat Polling ────────────────────────────────────────────────────────────
 
