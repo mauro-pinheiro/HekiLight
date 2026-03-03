@@ -134,8 +134,8 @@ local function GetSuggestedSpellKeybind(sbaSlotID)
         end
     end
 
-    Log("keybind lookup: no match found")
-    return ""
+    Log("keybind lookup: no direct keybind, falling back to SBA slot keybind")
+    return GetSlotKeybind(sbaSlotID)
 end
 
 -- ── UI Construction ───────────────────────────────────────────────────────────
