@@ -61,13 +61,34 @@ local function ApplyPosition()
     display:SetPoint("CENTER", UIParent, "CENTER", db.x, db.y)
 end
 
+-- Maps action slot IDs to their binding command name.
+-- Slots 1-12: main bar, 13-24: bar 3, 25-36: bar 4, etc.
+local SLOT_BINDINGS = {}
+do
+    local bars = {
+        { prefix = "ACTIONBUTTON",          start = 1  },
+        { prefix = "MULTIACTIONBAR3BUTTON", start = 13 },
+        { prefix = "MULTIACTIONBAR4BUTTON", start = 25 },
+        { prefix = "MULTIACTIONBAR2BUTTON", start = 37 },
+        { prefix = "MULTIACTIONBAR1BUTTON", start = 49 },
+    }
+    for _, bar in ipairs(bars) do
+        for i = 1, 12 do
+            SLOT_BINDINGS[bar.start + i - 1] = bar.prefix .. i
+        end
+    end
+end
+
 --- Return a short keybind string for an action slot, e.g. "C-1" or "F".
 local function GetSlotKeybind(slotID)
-    local key = GetBindingKey("ACTION " .. slotID)
-    if not key then return "" end
+    local bindCmd = SLOT_BINDINGS[slotID]
+    local key = (bindCmd and GetBindingKey(bindCmd))
+             or GetBindingKey("ACTION " .. slotID)  -- fallback
+    if not key or key == "" then return "" end
     key = key:gsub("ALT%-",   "A-")
               :gsub("CTRL%-",  "C-")
               :gsub("SHIFT%-", "S-")
+              :gsub("NUMPAD",  "N")
     return key
 end
 
@@ -119,11 +140,11 @@ local function BuildUI()
     rangeOverlay:SetColorTexture(1, 0, 0, 0.35)
     rangeOverlay:Hide()
 
-    -- Keybind label (bottom-right corner, like default action bars)
-    keybindText = display:CreateFontString(nil, "OVERLAY", "NumberFontNormal")
-    keybindText:SetPoint("BOTTOMRIGHT", display, "BOTTOMRIGHT", -2, 2)
+    -- Keybind label — white text with black shadow, bottom-right like default bars
+    keybindText = display:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    keybindText:SetPoint("BOTTOMRIGHT", display, "BOTTOMRIGHT", -2, 3)
     keybindText:SetTextColor(1, 1, 1, 1)
-    keybindText:SetShadowOffset(1, -1)
+    keybindText:SetShadowOffset(2, -2)
     keybindText:SetShadowColor(0, 0, 0, 1)
 
     display:Hide()
