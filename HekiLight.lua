@@ -97,36 +97,44 @@ end
 local function GetSuggestedSpellKeybind(sbaSlotID)
     -- Get the spell ID from the SBA slot (pcall guards against taint)
     local spellID
-    pcall(function()
-        local actionType, id = GetActionInfo(sbaSlotID)
+    local actionType
+    local callOk = pcall(function()
+        local id
+        actionType, id = GetActionInfo(sbaSlotID)
         if actionType == "spell" then spellID = id end
     end)
+    Log("keybind lookup: pcall ok=", callOk,
+        "actionType=", tostring(actionType), "spellID=", tostring(spellID))
 
     if spellID then
         -- Find all real bar slots that have this spell
         local slots = C_ActionBar.FindSpellActionButtons(spellID)
+        Log("FindSpellActionButtons:", slots and #slots or 0, "slots")
         if slots then
             for _, slot in ipairs(slots) do
-                if not C_ActionBar.IsAssistedCombatAction(slot) then
-                    local key = GetSlotKeybind(slot)
-                    if key ~= "" then return key end
-                end
+                local isAssist = C_ActionBar.IsAssistedCombatAction(slot)
+                local key = GetSlotKeybind(slot)
+                Log("  slot", slot, "isAssist=", isAssist, "key=", key)
+                if not isAssist and key ~= "" then return key end
             end
         end
     end
 
     -- Fallback: scan by matching icon texture
     local texture = C_ActionBar.GetActionTexture(sbaSlotID)
+    Log("texture fallback, sba texture=", tostring(texture))
     if texture then
         for slot = 1, 120 do
             if not C_ActionBar.IsAssistedCombatAction(slot)
             and C_ActionBar.GetActionTexture(slot) == texture then
                 local key = GetSlotKeybind(slot)
+                Log("  texture match at slot", slot, "key=", key)
                 if key ~= "" then return key end
             end
         end
     end
 
+    Log("keybind lookup: no match found")
     return ""
 end
 
