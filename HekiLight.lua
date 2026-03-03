@@ -18,7 +18,7 @@ end
 
 local DEFAULTS = {
     x           = 0,
-    y           = -220,
+    y           = 0,       -- screen center; use /hkl unlock to reposition
     iconSize    = 64,
     scale       = 1.0,
     locked      = false,
@@ -78,9 +78,15 @@ local function BuildUI()
 
     display:SetSize(size, size)
     display:SetScale(db.scale)
-    display:SetFrameStrata("MEDIUM")
+    display:SetFrameStrata("HIGH")   -- sit above action bars (MEDIUM)
+    display:SetFrameLevel(100)
     display:SetClampedToScreen(true)
     ApplyPosition()
+
+    -- Dark background so the frame is visible even before a texture loads
+    local bg = display:CreateTexture(nil, "BACKGROUND", nil, -1)
+    bg:SetAllPoints(display)
+    bg:SetColorTexture(0, 0, 0, 0.6)
 
     -- Drag support
     display:SetMovable(true)
@@ -96,8 +102,8 @@ local function BuildUI()
         db.y = math.floor(y + 0.5)
     end)
 
-    -- Spell icon
-    iconTexture = display:CreateTexture(nil, "BACKGROUND")
+    -- Spell icon (sub-layer 0, above the bg at -1)
+    iconTexture = display:CreateTexture(nil, "BACKGROUND", nil, 0)
     iconTexture:SetAllPoints(display)
     iconTexture:SetTexCoord(0.08, 0.92, 0.08, 0.92)  -- trim default icon border
 
@@ -120,20 +126,8 @@ local function BuildUI()
     keybindText:SetShadowOffset(1, -1)
     keybindText:SetShadowColor(0, 0, 0, 1)
 
-    -- Thin black border (guard against missing mixin on some clients)
-    if BackdropTemplateMixin then
-        local border = CreateFrame("Frame", nil, display, "BackdropTemplate")
-        border:SetAllPoints(display)
-        border:SetFrameLevel(display:GetFrameLevel() + 2)
-        border:SetBackdrop({
-            edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-            edgeSize = 10,
-        })
-        border:SetBackdropBorderColor(0, 0, 0, 1)
-    end
-
     display:Hide()
-    Log("BuildUI complete, iconSize=", db.iconSize)
+    Log("BuildUI complete, size=", size, "strata=HIGH level=100")
 end
 
 -- ── SBA Slot Detection ────────────────────────────────────────────────────────
@@ -221,7 +215,9 @@ local function Refresh()
     end
 
     display:Show()
-end
+    Log("display:Show() called — IsShown:", display:IsShown(),
+        "W:", display:GetWidth(), "H:", display:GetHeight(),
+        "x:", db.x, "y:", db.y)
 
 -- ── Combat Polling ────────────────────────────────────────────────────────────
 
