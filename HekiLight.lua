@@ -61,35 +61,57 @@ local function ApplyPosition()
     display:SetPoint("CENTER", UIParent, "CENTER", db.x, db.y)
 end
 
--- Maps action slot IDs to their binding command name.
--- Slots 1-12: main bar, 13-24: bar 3, 25-36: bar 4, etc.
+-- slot ID → binding command, built dynamically from actual button frames.
 local SLOT_BINDINGS = {}
-do
-    local bars = {
-        { prefix = "ACTIONBUTTON",          start = 1  },
-        { prefix = "MULTIACTIONBAR3BUTTON", start = 13 },
-        { prefix = "MULTIACTIONBAR4BUTTON", start = 25 },
-        { prefix = "MULTIACTIONBAR2BUTTON", start = 37 },
-        { prefix = "MULTIACTIONBAR1BUTTON", start = 49 },
+
+-- Called at PLAYER_LOGIN (frames are fully initialised by then).
+-- Queries each Blizzard action button frame for its current action slot so
+-- we never have to hard-code slot ranges that differ between game versions.
+local function RebuildSlotBindings()
+    wipe(SLOT_BINDINGS)
+
+    -- Main bar: ActionButton1-12 (current page, slots 1-12 on page 1)
+    for i = 1, 12 do
+        local btn = _G["ActionButton" .. i]
+        local slot = btn and (btn.action or (btn.GetAction and btn:GetAction()))
+        SLOT_BINDINGS[slot or i] = "ACTIONBUTTON" .. i
+    end
+
+    -- Extra bars: MultiBar* frames have fixed (non-paged) slot IDs
+    local multiBarDefs = {
+        { frameBase = "MultiBarBottomLeft",  bindBase = "MULTIACTIONBAR1BUTTON" },
+        { frameBase = "MultiBarBottomRight", bindBase = "MULTIACTIONBAR2BUTTON" },
+        { frameBase = "MultiBarRight",       bindBase = "MULTIACTIONBAR3BUTTON" },
+        { frameBase = "MultiBarLeft",        bindBase = "MULTIACTIONBAR4BUTTON" },
     }
-    for _, bar in ipairs(bars) do
+    for _, def in ipairs(multiBarDefs) do
         for i = 1, 12 do
-            SLOT_BINDINGS[bar.start + i - 1] = bar.prefix .. i
+            local btn = _G[def.frameBase .. "Button" .. i]
+            if btn then
+                local slot = btn.action or (btn.GetAction and btn:GetAction())
+                if slot and slot > 0 then
+                    SLOT_BINDINGS[slot] = def.bindBase .. i
+                    Log("SlotMap:", slot, "→", def.bindBase .. i)
+                end
+            end
         end
     end
+end
+
+--- Shorten modifier prefixes for display.
+local function FormatKey(key)
+    return key:gsub("ALT%-",   "A-")
+              :gsub("CTRL%-",  "C-")
+              :gsub("SHIFT%-", "S-")
+              :gsub("NUMPAD",  "N")
 end
 
 --- Return a short keybind string for an action slot, e.g. "C-1" or "F".
 local function GetSlotKeybind(slotID)
     local bindCmd = SLOT_BINDINGS[slotID]
-    local key = (bindCmd and GetBindingKey(bindCmd))
-             or GetBindingKey("ACTION " .. slotID)  -- fallback
+    local key = bindCmd and GetBindingKey(bindCmd)
     if not key or key == "" then return "" end
-    key = key:gsub("ALT%-",   "A-")
-              :gsub("CTRL%-",  "C-")
-              :gsub("SHIFT%-", "S-")
-              :gsub("NUMPAD",  "N")
-    return key
+    return FormatKey(key)
 end
 
 --- Find the keybind of the actual spell the SBA is suggesting,
@@ -324,6 +346,7 @@ events:SetScript("OnEvent", function(_, event, arg1)
         BuildUI()
 
     elseif event == "PLAYER_LOGIN" or event == "PLAYER_ENTERING_WORLD" then
+        RebuildSlotBindings()
         -- Handle logging in while already in combat
         if UnitAffectingCombat("player") then
             inCombat = true
@@ -347,6 +370,7 @@ events:SetScript("OnEvent", function(_, event, arg1)
     elseif event == "ACTIONBAR_UPDATE_STATE" or
            event == "ACTIONBAR_SLOT_CHANGED" or
            event == "UPDATE_BINDINGS" then
+        RebuildSlotBindings()
         Refresh()
     end
 end)
