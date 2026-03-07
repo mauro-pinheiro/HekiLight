@@ -608,12 +608,21 @@ local function RebuildEssentialCDs()
 end
 
 -- Returns the spellID of the first Essential CD that is off cooldown, or nil.
+-- Uses pcall because C_Spell.GetSpellCooldown returns secret number values in
+-- Midnight 12.0 — they can't be compared directly. When the spell IS ready
+-- (duration == 0, a plain number), the comparison succeeds. When it's on
+-- cooldown (duration is a nonzero secret value), the comparison throws and
+-- pcall catches it, which we correctly treat as "not ready".
 local function GetReadyDefensive()
     for _, entry in ipairs(essentialCDs) do
-        local cd = C_Spell.GetSpellCooldown(entry.spellID)
-        if cd and cd.duration == 0 and cd.isEnabled then
-            return entry.spellID
-        end
+        local isReady = false
+        pcall(function()
+            local cd = C_Spell.GetSpellCooldown(entry.spellID)
+            if cd and cd.duration == 0 then
+                isReady = true
+            end
+        end)
+        if isReady then return entry.spellID end
     end
 end
 
@@ -649,13 +658,9 @@ local function RefreshDefensive()
         defIconTexture:SetTexture(info.iconID)
     end
 
-    -- Cooldown spiral
-    local cd = C_Spell.GetSpellCooldown(spellID)
-    if cd and cd.duration and cd.duration > 0 then
-        defCooldownFrame:SetCooldown(cd.startTime, cd.duration)
-    else
-        defCooldownFrame:Clear()
-    end
+    -- Spell is off cooldown (GetReadyDefensive confirmed duration==0), so clear the spiral.
+    -- Passing secret values to SetCooldown is allowed, but comparing them is not.
+    defCooldownFrame:Clear()
 
     defDisplay:Show()
 end
