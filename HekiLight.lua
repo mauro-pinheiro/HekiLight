@@ -374,8 +374,8 @@ local function BuildSettingsPanel()
     end
 
     -- Custom slider: no global-name dependency (OptionsSliderTemplate is deprecated in 10.x+)
-    local function AddSlider(label, min, max, step, getValue, setValue)
-        local col = cols["left"]
+    local function AddSlider(label, min, max, step, getValue, setValue, colName)
+        local col = cols[colName or "left"]
 
         local labelStr = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         labelStr:SetPoint("TOPLEFT", col.x + 4, col.y)
@@ -397,7 +397,6 @@ local function BuildSettingsPanel()
         slider:SetObeyStepOnDrag(true)
         slider:SetValue(getValue())
         slider:SetScript("OnValueChanged", function(self, val)
-            val = math.floor(val / step + 0.5) * step
             setValue(val)
             labelStr:SetText(label .. ": " .. val)
         end)
@@ -420,76 +419,72 @@ local function BuildSettingsPanel()
     SectionHeader("Appearance")
     AddCheckbox("Lock position",
         "Prevent the icon from being accidentally dragged. Use /hkl unlock or untick this to reposition it.",
-        function() return db and db.locked or false end,
+        function() return db.locked end,
         function(v)
-            if db then
-                db.locked = v
-                display:EnableMouse(not v)
-                print("|cff88ccffHekiLight:|r Position " .. (v and "locked." or "unlocked — drag to reposition."))
-            end
+            db.locked = v
+            display:EnableMouse(not v)
+            print("|cff88ccffHekiLight:|r Position " .. (v and "locked." or "unlocked — drag to reposition."))
         end)
     AddSlider("Scale", 0.2, 3.0, 0.1,
-        function() return db and db.scale or DEFAULTS.scale end,
-        function(v) if db then db.scale = v; display:SetScale(v) end end)
+        function() return db.scale end,
+        function(v) db.scale = v; display:SetScale(v) end)
     AddSlider("Icon Size", 16, 256, 8,
-        function() return db and db.iconSize or DEFAULTS.iconSize end,
-        function(v) if db then db.iconSize = v; display:SetSize(v, v) end end)
+        function() return db.iconSize end,
+        function(v) db.iconSize = v; display:SetSize(v, v) end)
 
     SectionHeader("Display Options")
     AddCheckbox("Show keybind text",
         "Show the keybind for the suggested spell in the corner of the icon.",
-        function() return db and db.showKeybind or false end,
-        function(v) if db then db.showKeybind = v; if not v then keybindText:Hide() end end end)
+        function() return db.showKeybind end,
+        function(v) db.showKeybind = v; if not v then keybindText:Hide() end end)
     AddCheckbox("Show out-of-range tint",
         "Pulse the icon red when the suggested spell cannot reach your target.",
-        function() return db and db.showOutOfRange or false end,
-        function(v) if db then db.showOutOfRange = v; if not v then rangeOverlay:Hide() end end end)
+        function() return db.showOutOfRange end,
+        function(v) db.showOutOfRange = v; if not v then rangeOverlay:Hide() end end)
     AddCheckbox("Show cooldown spiral",
         "Display a cooldown sweep on the icon. May cause UI taint — use with caution.",
-        function() return db and db.showCooldown or false end,
-        function(v) if db then db.showCooldown = v; if not v then cooldownFrame:Hide() end end end)
+        function() return db.showCooldown end,
+        function(v) db.showCooldown = v; if not v then cooldownFrame:Hide() end end)
     AddCheckbox("Play sounds",
         "Play a subtle click when the icon appears as you enter combat.",
-        function() return db and db.sounds or false end,
-        function(v) if db then db.sounds = v end end)
+        function() return db.sounds end,
+        function(v) db.sounds = v end)
 
     SectionHeader("Minimap")
     AddCheckbox("Show minimap button",
         "Show the HekiLight button on the minimap. Drag it to reposition.",
-        function() return db and db.minimapShow ~= false end,
+        function() return db.minimapShow ~= false end,
         function(v)
-            if db then
-                db.minimapShow = v
-                if minimapBtn then if v then minimapBtn:Show() else minimapBtn:Hide() end end
-            end
+            db.minimapShow = v
+            if minimapBtn then minimapBtn:SetShown(v) end
         end)
 
     -- ── Right Column: Hide Conditions ─────────────────────────────────────────
     SectionHeader("Hide Icon When...", "right")
     AddCheckbox("Player is dead or a ghost",
         "Hide the icon while you are dead or in spirit form.",
-        function() return db and db.hideWhenDead ~= false end,
-        function(v) if db then db.hideWhenDead = v; Refresh() end end, "right")
+        function() return db.hideWhenDead ~= false end,
+        function(v) db.hideWhenDead = v; Refresh() end, "right")
     AddCheckbox("Player is mounted",
         "Hide the icon while riding any mount.",
-        function() return db and db.hideWhenMounted ~= false end,
-        function(v) if db then db.hideWhenMounted = v; Refresh() end end, "right")
+        function() return db.hideWhenMounted ~= false end,
+        function(v) db.hideWhenMounted = v; Refresh() end, "right")
     AddCheckbox("Player is in a vehicle",
         "Hide the icon when controlling a vehicle with its own action bar.",
-        function() return db and db.hideWhenVehicle ~= false end,
-        function(v) if db then db.hideWhenVehicle = v; Refresh() end end, "right")
+        function() return db.hideWhenVehicle ~= false end,
+        function(v) db.hideWhenVehicle = v; Refresh() end, "right")
     AddCheckbox("A cinematic is playing",
         "Hide the icon during cut-scenes and pre-rendered movies.",
-        function() return db and db.hideWhenCinematic ~= false end,
-        function(v) if db then db.hideWhenCinematic = v; Refresh() end end, "right")
+        function() return db.hideWhenCinematic ~= false end,
+        function(v) db.hideWhenCinematic = v; Refresh() end, "right")
     AddCheckbox("Player is in a resting area",
         "Hide the icon while in a city or inn.",
-        function() return db and db.hideWhenResting ~= false end,
-        function(v) if db then db.hideWhenResting = v; Refresh() end end, "right")
+        function() return db.hideWhenResting ~= false end,
+        function(v) db.hideWhenResting = v; Refresh() end, "right")
     AddCheckbox("No hostile target",
         "Hide the icon when you have no target or your target is not attackable.",
-        function() return db and db.hideWhenNoTarget ~= false end,
-        function(v) if db then db.hideWhenNoTarget = v; Refresh() end end, "right")
+        function() return db.hideWhenNoTarget ~= false end,
+        function(v) db.hideWhenNoTarget = v; Refresh() end, "right")
 
     -- Refresh all controls to current db values when the panel is shown
     panel:SetScript("OnShow", function()
@@ -715,15 +710,30 @@ events:SetScript("OnEvent", function(_, event, arg1)
            event == "PLAYER_TARGET_CHANGED" then
         Refresh()
 
-    elseif event == "ACTIONBAR_UPDATE_STATE" or
-           event == "ACTIONBAR_SLOT_CHANGED" or
+    elseif event == "ACTIONBAR_UPDATE_STATE" then
+        -- State changes (button highlights) don't affect slot assignments; just re-render.
+        Refresh()
+
+    elseif event == "ACTIONBAR_SLOT_CHANGED" or
            event == "UPDATE_BINDINGS" then
+        -- Slot content or keybinding actually changed — rebuild the map then re-render.
         RebuildSlotBindings()
         Refresh()
     end
 end)
 
 -- ── Slash Commands ────────────────────────────────────────────────────────────
+
+-- Data-driven hide-condition map. Adding a new condition only requires a new
+-- entry here and a matching key in DEFAULTS — no ladder of elseif needed.
+local HIDE_FLAGS = {
+    dead      = { key = "hideWhenDead",      label = "Hide when dead" },
+    mounted   = { key = "hideWhenMounted",   label = "Hide when mounted" },
+    vehicle   = { key = "hideWhenVehicle",   label = "Hide in vehicle" },
+    cinematic = { key = "hideWhenCinematic", label = "Hide during cinematic" },
+    resting   = { key = "hideWhenResting",   label = "Hide while resting" },
+    target    = { key = "hideWhenNoTarget",  label = "Hide with no hostile target" },
+}
 
 local function PrintHelp()
     print("|cff88ccffHekiLight|r commands:")
@@ -767,7 +777,7 @@ SlashCmdList["HEKILIGHT"] = function(msg)
         ApplyPosition()
         print("|cff88ccffHekiLight:|r Position reset.")
 
-    elseif msg:match("^scale%s+(.+)$") then
+    elseif msg:find("^scale%s") then
         local v = tonumber(msg:match("^scale%s+(.+)$"))
         if v and v >= 0.2 and v <= 3.0 then
             db.scale = v
@@ -777,7 +787,7 @@ SlashCmdList["HEKILIGHT"] = function(msg)
             print("|cff88ccffHekiLight:|r Scale must be between 0.2 and 3.0.")
         end
 
-    elseif msg:match("^size%s+(.+)$") then
+    elseif msg:find("^size%s") then
         local v = tonumber(msg:match("^size%s+(.+)$"))
         if v and v >= 16 and v <= 256 then
             db.iconSize = v
@@ -787,7 +797,7 @@ SlashCmdList["HEKILIGHT"] = function(msg)
             print("|cff88ccffHekiLight:|r Size must be between 16 and 256.")
         end
 
-    elseif msg:match("^poll%s+(.+)$") then
+    elseif msg:find("^poll%s") then
         local v = tonumber(msg:match("^poll%s+(.+)$"))
         if v and v >= 0.016 and v <= 1.0 then
             db.pollRate = v
@@ -833,19 +843,17 @@ SlashCmdList["HEKILIGHT"] = function(msg)
         if minimapBtn then minimapBtn:Hide() end
         print("|cff88ccffHekiLight:|r Minimap button hidden.")
 
-    -- Hide condition toggles
-    elseif msg == "hide dead on"      then db.hideWhenDead      = true;  Refresh(); print("|cff88ccffHekiLight:|r Hide when dead: ON")
-    elseif msg == "hide dead off"     then db.hideWhenDead      = false; Refresh(); print("|cff88ccffHekiLight:|r Hide when dead: OFF")
-    elseif msg == "hide mounted on"   then db.hideWhenMounted   = true;  Refresh(); print("|cff88ccffHekiLight:|r Hide when mounted: ON")
-    elseif msg == "hide mounted off"  then db.hideWhenMounted   = false; Refresh(); print("|cff88ccffHekiLight:|r Hide when mounted: OFF")
-    elseif msg == "hide vehicle on"   then db.hideWhenVehicle   = true;  Refresh(); print("|cff88ccffHekiLight:|r Hide in vehicle: ON")
-    elseif msg == "hide vehicle off"  then db.hideWhenVehicle   = false; Refresh(); print("|cff88ccffHekiLight:|r Hide in vehicle: OFF")
-    elseif msg == "hide cinematic on"  then db.hideWhenCinematic = true;  Refresh(); print("|cff88ccffHekiLight:|r Hide during cinematic: ON")
-    elseif msg == "hide cinematic off" then db.hideWhenCinematic = false; Refresh(); print("|cff88ccffHekiLight:|r Hide during cinematic: OFF")
-    elseif msg == "hide resting on"   then db.hideWhenResting   = true;  Refresh(); print("|cff88ccffHekiLight:|r Hide while resting: ON")
-    elseif msg == "hide resting off"  then db.hideWhenResting   = false; Refresh(); print("|cff88ccffHekiLight:|r Hide while resting: OFF")
-    elseif msg == "hide target on"    then db.hideWhenNoTarget  = true;  Refresh(); print("|cff88ccffHekiLight:|r Hide with no hostile target: ON")
-    elseif msg == "hide target off"   then db.hideWhenNoTarget  = false; Refresh(); print("|cff88ccffHekiLight:|r Hide with no hostile target: OFF")
+    -- Hide condition toggles — data-driven via HIDE_FLAGS; no per-condition branches needed.
+    elseif msg:find("^hide%s") then
+        local flag, state = msg:match("^hide%s+(%a+)%s+(on|off)$")
+        local def = flag and HIDE_FLAGS[flag]
+        if def then
+            db[def.key] = (state == "on")
+            Refresh()
+            print("|cff88ccffHekiLight:|r " .. def.label .. ": " .. state:upper())
+        else
+            print("|cff88ccffHekiLight:|r Unknown condition. Valid: dead, mounted, vehicle, cinematic, resting, target")
+        end
 
     elseif msg == "debug" then
         DEBUG = not DEBUG
