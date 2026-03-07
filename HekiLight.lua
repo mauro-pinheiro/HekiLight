@@ -125,50 +125,25 @@ local function GetSlotKeybind(slotID)
     return FormatKey(key)
 end
 
---- Find the keybind of the actual spell the SBA is suggesting,
---- by looking up the spell on the player's real action bar slots.
-local function GetSuggestedSpellKeybind(sbaSlotID)
-    -- Get the spell ID from the SBA slot (pcall guards against taint)
-    local spellID
-    local actionType
-    local callOk = pcall(function()
-        local id
-        actionType, id = GetActionInfo(sbaSlotID)
-        if actionType == "spell" then spellID = id end
-    end)
-    Log("keybind lookup: pcall ok=", callOk,
-        "actionType=", tostring(actionType), "spellID=", tostring(spellID))
-
-    if spellID then
-        -- Find all real bar slots that have this spell
-        local slots = C_ActionBar.FindSpellActionButtons(spellID)
-        Log("FindSpellActionButtons:", slots and #slots or 0, "slots")
-        if slots then
-            for _, slot in ipairs(slots) do
-                local isAssist = C_ActionBar.IsAssistedCombatAction(slot)
+--- Return a short keybind string for a spell, by finding the spell's real
+--- action bar slot(s) and looking up the binding. Since we now always have
+--- the spellID from GetActiveSuggestion(), we no longer need to extract it
+--- from the SBA slot first, and the texture-fallback scan is gone.
+local function GetSpellKeybind(spellID)
+    local slots = C_ActionBar.FindSpellActionButtons(spellID)
+    if slots then
+        for _, slot in ipairs(slots) do
+            if not C_ActionBar.IsAssistedCombatAction(slot) then
                 local key = GetSlotKeybind(slot)
-                Log("  slot", slot, "isAssist=", isAssist, "key=", key)
-                if not isAssist and key ~= "" then return key end
+                if key ~= "" then
+                    Log("GetSpellKeybind:", spellID, "→", key, "(slot", slot, ")")
+                    return key
+                end
             end
         end
     end
-
-    -- Fallback: scan by matching icon texture
-    local texture = C_ActionBar.GetActionTexture(sbaSlotID)
-    Log("texture fallback, sba texture=", tostring(texture))
-    if texture then
-        for slot = 1, 120 do
-            if not C_ActionBar.IsAssistedCombatAction(slot)
-            and C_ActionBar.GetActionTexture(slot) == texture then
-                local key = GetSlotKeybind(slot)
-                Log("  texture match at slot", slot, "key=", key)
-                if key ~= "" then return key end
-            end
-        end
-    end
-
-    Log("keybind lookup: no direct keybind, falling back to SBA slot keybind")
-    return GetSlotKeybind(sbaSlotID)
+    Log("GetSpellKeybind:", spellID, "→ no keybind found")
+    return ""
 end
 
 -- ── UI Construction ───────────────────────────────────────────────────────────
@@ -505,31 +480,82 @@ local function BuildSettingsPanel()
     Settings.RegisterAddOnCategory(settingsCategory)
 end
 
--- ── SBA Slot Detection ────────────────────────────────────────────────────────
+-- ── Spell Suggestion Detection ───────────────────────────────────────────────
 
--- Try the fast direct API first; fall back to scanning all slots with
--- IsAssistedCombatAction ONLY when HasAssistedCombatActionButtons is true
--- but FindAssistedCombatActionButtons returns empty (a known Blizzard edge case).
--- When HasAssisted is false the addon has nothing to do — return nil immediately.
-local function FindSBASlot()
-    if C_ActionBar.HasAssistedCombatActionButtons() then
-        local slots = C_ActionBar.FindAssistedCombatActionButtons()
-        if slots and #slots > 0 then
-            Log("FindAssistedCombatActionButtons → slot", slots[1])
-            return slots[1]
+-- Returns true when the rotation assistance system is active in any mode.
+-- Used to decide whether to start the combat poll loop.
+local function IsAssistActive()
+    return C_ActionBar.HasAssistedCombatActionButtons()
+        or GetCVarBool("assistedCombatHighlight")
+end
+
+-- Returns the suggested spellID from the rotation engine, plus the first
+-- real (non-SBA) action bar slot that contains it for range/keybind checks.
+--
+-- Detection order:
+--   1. C_AssistedCombat.GetNextCastSpell(false) — direct engine query; works
+--      with either SBA button or Action Bar Highlight (or both).
+--   2. Fallback: derive spellID from the SBA slot via GetActionInfo.
+--      Keeps the old behaviour for any edge case where GetNextCastSpell is nil.
+local function GetActiveSuggestion()
+    local spellID
+
+    -- Primary path: ask the rotation engine directly (Midnight 12.0+).
+    -- checkForVisibleButton=false means "give me the suggestion even if the
+    -- SBA floating button is hidden / not on the bar."
+    if C_AssistedCombat.GetNextCastSpell then
+        local ok
+        ok, spellID = pcall(C_AssistedCombat.GetNextCastSpell, false)
+        if not ok then spellID = nil end
+        Log("GetNextCastSpell →", tostring(spellID))
+    end
+
+    -- Fallback: SBA slot → GetActionInfo → spellID (old path; safety net).
+    if not spellID then
+        -- Find the SBA slot the old way.
+        local sbaSlot
+        if C_ActionBar.HasAssistedCombatActionButtons() then
+            local slots = C_ActionBar.FindAssistedCombatActionButtons()
+            if slots and #slots > 0 then
+                sbaSlot = slots[1]
+            else
+                for slot = 1, 120 do
+                    if C_ActionBar.IsAssistedCombatAction(slot) then
+                        sbaSlot = slot; break
+                    end
+                end
+            end
         end
-        -- HasAssisted=true but FindAssisted empty; scan as last resort.
-        Log("HasAssisted=true but FindAssisted returned empty, scanning slots...")
-        for slot = 1, 120 do
-            if C_ActionBar.IsAssistedCombatAction(slot) then
-                Log("Fallback scan found SBA slot:", slot)
-                return slot
+        if sbaSlot then
+            local ok
+            ok, spellID = pcall(function()
+                local t, id = GetActionInfo(sbaSlot)
+                return (t == "spell") and id or nil
+            end)
+            if not ok then spellID = nil end
+            Log("Fallback SBA slot", tostring(sbaSlot), "→ spellID", tostring(spellID))
+        end
+    end
+
+    if not spellID then
+        Log("No active suggestion found")
+        return nil, nil
+    end
+
+    -- Find a real (non-SBA) action bar slot for this spell so we can do
+    -- range checks and keybind lookups against the player's actual bars.
+    local realSlotID
+    local slots = C_ActionBar.FindSpellActionButtons(spellID)
+    if slots then
+        for _, slot in ipairs(slots) do
+            if not C_ActionBar.IsAssistedCombatAction(slot) then
+                realSlotID = slot
+                break
             end
         end
     end
-    -- SBA is not active — nothing to show.
-    Log("HasAssistedCombatActionButtons = false")
-    return nil
+    Log("Active suggestion: spellID=", spellID, "realSlot=", tostring(realSlotID))
+    return spellID, realSlotID
 end
 
 -- ── Core Update Logic ─────────────────────────────────────────────────────────
@@ -559,31 +585,30 @@ local function ShouldShow()
 end
 
 local function Refresh()
-    local slotID = FindSBASlot()
+    local spellID, realSlotID = GetActiveSuggestion()
 
-    if not slotID then
-        Log("No SBA slot found — hiding display")
+    if not spellID then
+        Log("No active suggestion — hiding display")
         display:Hide()
         return
     end
 
-    local texture = C_ActionBar.GetActionTexture(slotID)
-    if not texture then
-        Log("Slot", slotID, "has no texture — hiding display")
+    -- Texture from spell info (iconID is a numeric file ID accepted by SetTexture)
+    local spellInfo = C_Spell.GetSpellInfo(spellID)
+    if not spellInfo or not spellInfo.iconID then
+        Log("No spell info for", spellID, "— hiding display")
         display:Hide()
         return
     end
-
-    Log("Showing spell from slot", slotID, "texture:", texture)
+    Log("Showing spellID", spellID, "iconID", spellInfo.iconID, "realSlot", tostring(realSlotID))
 
     -- Icon
-    iconTexture:SetTexture(texture)
+    iconTexture:SetTexture(spellInfo.iconID)
 
-    -- Cooldown — SBA slot cooldown data is marked secret by Blizzard's taint
-    -- system; wrap in pcall so a taint error doesn't spam the log.
+    -- Cooldown — use C_Spell API (no slot needed; taint guard still applies)
     if db.showCooldown then
         local ok = pcall(function()
-            local cd = C_ActionBar.GetActionCooldown(slotID)
+            local cd = C_Spell.GetSpellCooldown(spellID)
             local startTime = cd and cd.startTime or 0
             if startTime > 0 then
                 cooldownFrame:SetCooldown(startTime, cd.duration or 0)
@@ -592,40 +617,33 @@ local function Refresh()
                 cooldownFrame:Hide()
             end
         end)
-        if not ok then
-            cooldownFrame:Hide()
-        end
+        if not ok then cooldownFrame:Hide() end
     else
         cooldownFrame:Hide()
     end
 
-    -- Range indicator
-    if db.showOutOfRange then
-        local inRange = C_ActionBar.IsActionInRange(slotID)
+    -- Range indicator — requires a real action bar slot; hide if none found
+    if db.showOutOfRange and realSlotID then
+        local inRange = C_ActionBar.IsActionInRange(realSlotID)
         -- inRange: true = in range, false = out of range, nil = no range requirement
-        if inRange == false then
-            rangeOverlay:Show()
-        else
-            rangeOverlay:Hide()
-        end
+        rangeOverlay:SetShown(inRange == false)
     else
         rangeOverlay:Hide()
     end
 
-    -- Keybind — show the real spell's keybind, not the SBA button's keybind
+    -- Keybind
     if db.showKeybind then
-        keybindText:SetText(GetSuggestedSpellKeybind(slotID))
+        keybindText:SetText(GetSpellKeybind(spellID))
         keybindText:Show()
     else
         keybindText:Hide()
     end
 
-    -- All content is ready — only show if suppression conditions allow it
+    -- All content ready — only show if suppression conditions allow it
     local ok, reason = ShouldShow()
     if ok then
         display:Show()
-        Log("display:Show() called — IsShown:", display:IsShown(),
-            "W:", display:GetWidth(), "H:", display:GetHeight(),
+        Log("display:Show() — IsShown:", display:IsShown(),
             "x:", db.x, "y:", db.y)
     else
         display:Hide()
@@ -690,19 +708,15 @@ events:SetScript("OnEvent", function(_, event, arg1)
         -- Handle logging in while already in combat
         if UnitAffectingCombat("player") then
             inCombat = true
-            if C_ActionBar.HasAssistedCombatActionButtons() then
-                StartPollLoop()
-            end
+            if IsAssistActive() then StartPollLoop() end
         end
         Refresh()
 
     elseif event == "PLAYER_REGEN_DISABLED" then
         inCombat = true
-        -- Only poll if SBA is actually on the action bar; if it's added later,
-        -- ACTIONBAR_SLOT_CHANGED will start the loop at that point.
-        if C_ActionBar.HasAssistedCombatActionButtons() then
-            StartPollLoop()
-        end
+        -- Poll only when rotation assistance is active (SBA button or Highlight).
+        -- ACTIONBAR_SLOT_CHANGED will start the loop if the feature is enabled mid-combat.
+        if IsAssistActive() then StartPollLoop() end
         Log("Entered combat")
 
     elseif event == "PLAYER_REGEN_ENABLED" then
@@ -738,10 +752,8 @@ events:SetScript("OnEvent", function(_, event, arg1)
         -- Slot content or keybinding actually changed — rebuild the map then re-render.
         RebuildSlotBindings()
         Refresh()
-        -- If SBA was just placed on the bar mid-combat, start polling now.
-        if inCombat and C_ActionBar.HasAssistedCombatActionButtons() then
-            StartPollLoop()
-        end
+        -- If assist feature was just enabled mid-combat, start polling now.
+        if inCombat and IsAssistActive() then StartPollLoop() end
     end
 end)
 
@@ -883,14 +895,38 @@ SlashCmdList["HEKILIGHT"] = function(msg)
         print("|cff88ccffHekiLight:|r Debug output " .. (DEBUG and "ON" or "OFF") .. ".")
 
     elseif msg == "status" then
-        local hasAPI = C_ActionBar.HasAssistedCombatActionButtons ~= nil
-        local hasActive = hasAPI and C_ActionBar.HasAssistedCombatActionButtons()
-        local slots = hasActive and C_ActionBar.FindAssistedCombatActionButtons() or {}
+        local hasSBA      = C_ActionBar.HasAssistedCombatActionButtons()
+        local hasHighlight = GetCVarBool("assistedCombatHighlight")
+        local hasEngine   = C_AssistedCombat.GetNextCastSpell ~= nil
+
+        -- Detection mode summary
+        local mode
+        if hasSBA and hasHighlight then
+            mode = "|cff00ff00SBA button + Action Bar Highlight|r"
+        elseif hasSBA then
+            mode = "|cffffff00SBA button only|r"
+        elseif hasHighlight then
+            mode = "|cffffff00Action Bar Highlight only|r"
+        else
+            mode = "|cffff4444none — rotation assistance is off|r"
+        end
+
+        -- Current suggestion from engine
+        local currentSpellID
+        if hasEngine then
+            pcall(function() currentSpellID = C_AssistedCombat.GetNextCastSpell(false) end)
+        end
+        local spellDesc = "(none)"
+        if currentSpellID then
+            local si = C_Spell.GetSpellInfo(currentSpellID)
+            spellDesc = si and (si.name .. " [" .. currentSpellID .. "]") or tostring(currentSpellID)
+        end
+
         local canShow, suppressReason = ShouldShow()
         print("|cff88ccffHekiLight status:|r")
-        print("  API available:", tostring(hasAPI))
-        print("  HasAssistedCombatActionButtons:", tostring(hasActive))
-        print("  FindAssistedCombatActionButtons slots:", #slots > 0 and table.concat(slots, ", ") or "(none)")
+        print("  Detection mode:", mode)
+        print("  GetNextCastSpell API:", tostring(hasEngine))
+        print("  Current suggestion:", spellDesc)
         print("  In combat:", tostring(inCombat))
         print("  Display visible:", tostring(display:IsShown()))
         if canShow then
@@ -898,14 +934,6 @@ SlashCmdList["HEKILIGHT"] = function(msg)
         else
             print("  Suppression: |cffff4444" .. suppressReason .. "|r — icon hidden")
         end
-        -- Scan for IsAssistedCombatAction hits
-        local found = {}
-        for slot = 1, 120 do
-            if C_ActionBar.IsAssistedCombatAction(slot) then
-                tinsert(found, slot)
-            end
-        end
-        print("  IsAssistedCombatAction hits:", #found > 0 and table.concat(found, ", ") or "(none)")
 
     else
         PrintHelp()
