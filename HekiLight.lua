@@ -17,16 +17,18 @@ end
 -- ── Defaults ────────────────────────────────────────────────────────────────
 
 local DEFAULTS = {
-    x           = 0,
-    y           = 0,       -- screen center; use /hkl unlock to reposition
-    iconSize    = 64,
-    scale       = 1.0,
-    locked      = false,
-    showKeybind = true,
-    showCooldown = false,   -- SBA cooldown data is taint-protected; enable at your own risk
+    x              = 0,
+    y              = 0,       -- screen center; use /hkl unlock to reposition
+    iconSize       = 64,
+    scale          = 1.0,
+    locked         = false,
+    showKeybind    = true,
+    showCooldown   = false,   -- SBA cooldown data is taint-protected; enable at your own risk
     showOutOfRange = true,
-    -- How often (seconds) to refresh while in combat
-    pollRate    = 0.05,
+    pollRate       = 0.05,   -- how often (seconds) to refresh while in combat
+    sounds         = false,  -- subtle sound when icon appears in combat
+    minimapAngle   = 225,    -- degrees around minimap (0=right, 90=top, 180=left, 270=bottom)
+    minimapShow    = true,
 }
 
 -- ── State ────────────────────────────────────────────────────────────────────
@@ -34,11 +36,12 @@ local DEFAULTS = {
 local db            -- points at HekiLightDB after ADDON_LOADED
 local inCombat = false
 local elapsed  = 0
+local rangeTicker   -- C_Timer ticker for range overlay pulse animation
 
 -- ── Frames ───────────────────────────────────────────────────────────────────
 
--- Root display frame
-local display = CreateFrame("Frame", "HekiLightDisplay", UIParent)
+-- Root display frame (BackdropTemplate enables SetBackdrop for border support)
+local display = CreateFrame("Frame", "HekiLightDisplay", UIParent, "BackdropTemplate")
 
 -- Child widgets (created in BuildUI)
 local iconTexture
@@ -168,14 +171,28 @@ local function BuildUI()
     display:SetSize(size, size)
     display:SetScale(db.scale)
     display:SetFrameStrata("HIGH")   -- sit above action bars (MEDIUM)
-    display:SetFrameLevel(100)
+    display:SetFrameLevel(10)        -- reasonable level; 100 was unnecessarily high
     display:SetClampedToScreen(true)
     ApplyPosition()
 
-    -- Dark background so the frame is visible even before a texture loads
-    local bg = display:CreateTexture(nil, "BACKGROUND", nil, -1)
-    bg:SetAllPoints(display)
-    bg:SetColorTexture(0, 0, 0, 0.6)
+    -- Backdrop: dark background + thin tooltip-style border
+    display:SetBackdrop({
+        bgFile   = "Interface\\Buttons\\WHITE8X8",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile     = true,
+        tileSize = 8,
+        edgeSize = 8,
+        insets   = { left = 2, right = 2, top = 2, bottom = 2 },
+    })
+    display:SetBackdropColor(0, 0, 0, 0.7)
+    display:SetBackdropBorderColor(0.5, 0.5, 0.5, 0.9)
+
+    -- Play a subtle sound when the icon first appears in combat
+    display:SetScript("OnShow", function()
+        if db and db.sounds then
+            PlaySoundFile("Interface\\Buttons\\UI-CheckBox-Up.wav", "SFX")
+        end
+    end)
 
     -- Drag support
     display:SetMovable(true)
@@ -191,8 +208,8 @@ local function BuildUI()
         db.y = math.floor(y + 0.5)
     end)
 
-    -- Spell icon (sub-layer 0, above the bg at -1)
-    iconTexture = display:CreateTexture(nil, "BACKGROUND", nil, 0)
+    -- Spell icon (ARTWORK so the backdrop border in BORDER layer renders above it)
+    iconTexture = display:CreateTexture(nil, "ARTWORK")
     iconTexture:SetAllPoints(display)
     iconTexture:SetTexCoord(0.08, 0.92, 0.08, 0.92)  -- trim default icon border
 
@@ -202,20 +219,234 @@ local function BuildUI()
     cooldownFrame:SetDrawEdge(true)
     cooldownFrame:SetHideCountdownNumbers(false)
 
-    -- Out-of-range red tint
+    -- Out-of-range red tint — pulses so it's impossible to miss
     rangeOverlay = display:CreateTexture(nil, "OVERLAY")
     rangeOverlay:SetAllPoints(display)
     rangeOverlay:SetColorTexture(1, 0, 0, 0.35)
     rangeOverlay:Hide()
+    rangeOverlay:SetScript("OnShow", function()
+        local alpha, dir = 0.15, 1
+        rangeTicker = C_Timer.NewTicker(0.05, function()
+            alpha = alpha + dir * 0.04
+            if alpha >= 0.5 then dir = -1 elseif alpha <= 0.1 then dir = 1 end
+            rangeOverlay:SetAlpha(alpha)
+        end)
+    end)
+    rangeOverlay:SetScript("OnHide", function()
+        if rangeTicker then rangeTicker:Cancel(); rangeTicker = nil end
+        rangeOverlay:SetAlpha(1)
+    end)
 
-    -- Keybind label — thick outline for maximum readability over any icon
+    -- Keybind label — NumberFontNormal is the same font Blizzard uses on action buttons
     keybindText = display:CreateFontString(nil, "OVERLAY")
-    keybindText:SetFont("Fonts\\FRIZQT__.TTF", 14, "THICKOUTLINE")
+    keybindText:SetFontObject(NumberFontNormal)
     keybindText:SetPoint("BOTTOMRIGHT", display, "BOTTOMRIGHT", -2, 3)
     keybindText:SetTextColor(1, 1, 1, 1)
 
     display:Hide()
-    Log("BuildUI complete, size=", size, "strata=HIGH level=100")
+    Log("BuildUI complete, size=", size, "strata=HIGH level=10")
+end
+
+-- ── Minimap Button ────────────────────────────────────────────────────────────
+
+local minimapBtn
+local settingsCategory
+
+local function UpdateMinimapPos()
+    local angle = math.rad(db.minimapAngle or 225)
+    minimapBtn:SetPoint("CENTER", Minimap, "CENTER",
+        80 * math.cos(angle),
+        80 * math.sin(angle))
+end
+
+local function BuildMinimapButton()
+    minimapBtn = CreateFrame("Button", "HekiLightMinimapButton", Minimap)
+    minimapBtn:SetSize(32, 32)
+    minimapBtn:SetFrameStrata("MEDIUM")
+    minimapBtn:SetFrameLevel(8)
+
+    local bg = minimapBtn:CreateTexture(nil, "BACKGROUND")
+    bg:SetSize(32, 32)
+    bg:SetPoint("CENTER")
+    bg:SetTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Background")
+
+    local icon = minimapBtn:CreateTexture(nil, "ARTWORK")
+    icon:SetSize(18, 18)
+    icon:SetPoint("CENTER")
+    icon:SetTexture("Interface\\Icons\\ability_monk_chiwave")
+
+    local border = minimapBtn:CreateTexture(nil, "OVERLAY")
+    border:SetSize(54, 54)
+    border:SetPoint("CENTER")
+    border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+
+    local hl = minimapBtn:CreateTexture(nil, "HIGHLIGHT")
+    hl:SetSize(32, 32)
+    hl:SetPoint("CENTER")
+    hl:SetTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
+    hl:SetBlendMode("ADD")
+
+    -- Drag to reposition around minimap edge
+    minimapBtn:RegisterForDrag("LeftButton")
+    minimapBtn:SetScript("OnDragStart", function(self)
+        self:SetScript("OnUpdate", function()
+            local mx, my = Minimap:GetCenter()
+            local px, py = GetCursorPosition()
+            local s = UIParent:GetEffectiveScale()
+            db.minimapAngle = math.deg(math.atan2((py / s) - my, (px / s) - mx))
+            UpdateMinimapPos()
+        end)
+    end)
+    minimapBtn:SetScript("OnDragStop", function(self)
+        self:SetScript("OnUpdate", nil)
+    end)
+
+    minimapBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+        GameTooltip:AddLine("|cff88ccffHekiLight|r")
+        GameTooltip:AddLine("Click to open settings", 1, 1, 1)
+        GameTooltip:AddLine("Drag to reposition", 0.7, 0.7, 0.7)
+        GameTooltip:Show()
+    end)
+    minimapBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+    minimapBtn:SetScript("OnClick", function()
+        if settingsCategory then
+            Settings.OpenToCategory(settingsCategory:GetID())
+        end
+    end)
+
+    UpdateMinimapPos()
+    if not db.minimapShow then minimapBtn:Hide() end
+end
+
+-- ── Settings Panel ────────────────────────────────────────────────────────────
+
+local function BuildSettingsPanel()
+    local panel = CreateFrame("Frame")
+    panel.name = "HekiLight"
+
+    local title = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    title:SetPoint("TOPLEFT", 16, -16)
+    title:SetText("HekiLight")
+
+    local version = C_AddOns.GetAddOnMetadata("HekiLight", "Version") or "?"
+    local subtitle = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    subtitle:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -4)
+    subtitle:SetText("Rotation assistant icon overlay  |cff666666v" .. version .. "|r")
+
+    local checkboxRefs = {}
+    local sliderRefs   = {}
+    local y = -70
+    local sliderIdx = 0
+
+    local function AddCheckbox(label, tip, getValue, setValue)
+        local cb = CreateFrame("CheckButton", nil, panel, "UICheckButtonTemplate")
+        cb:SetPoint("TOPLEFT", 16, y)
+        cb.text:SetText(label)
+        cb:SetChecked(getValue())
+        cb:SetScript("OnClick", function(self) setValue(self:GetChecked()) end)
+        if tip then
+            cb:SetScript("OnEnter", function(self)
+                GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                GameTooltip:AddLine(label)
+                GameTooltip:AddLine(tip, 1, 1, 1, true)
+                GameTooltip:Show()
+            end)
+            cb:SetScript("OnLeave", function() GameTooltip:Hide() end)
+        end
+        table.insert(checkboxRefs, { cb = cb, getValue = getValue })
+        y = y - 28
+        return cb
+    end
+
+    local function AddSlider(label, min, max, step, getValue, setValue)
+        sliderIdx = sliderIdx + 1
+        local name   = "HekiLightSettingsSlider" .. sliderIdx
+        local slider = CreateFrame("Slider", name, panel, "OptionsSliderTemplate")
+        slider:SetPoint("TOPLEFT", 20, y - 10)
+        slider:SetWidth(220)
+        slider:SetMinMaxValues(min, max)
+        slider:SetValueStep(step)
+        slider:SetObeyStepOnDrag(true)
+        slider:SetValue(getValue())
+        _G[name .. "Low"]:SetText(tostring(min))
+        _G[name .. "High"]:SetText(tostring(max))
+        _G[name .. "Text"]:SetText(label .. ": " .. getValue())
+        slider:SetScript("OnValueChanged", function(self, val)
+            val = math.floor(val / step + 0.5) * step
+            setValue(val)
+            _G[name .. "Text"]:SetText(label .. ": " .. val)
+        end)
+        table.insert(sliderRefs, { slider = slider, name = name, label = label,
+                                   step = step, getValue = getValue })
+        y = y - 52
+        return slider
+    end
+
+    local function SectionHeader(text)
+        local s = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        s:SetPoint("TOPLEFT", 16, y)
+        s:SetText(text)
+        y = y - 22
+    end
+
+    -- Appearance
+    SectionHeader("Appearance")
+    AddSlider("Scale", 0.2, 3.0, 0.1,
+        function() return db and db.scale or DEFAULTS.scale end,
+        function(v) if db then db.scale = v; display:SetScale(v) end end)
+    AddSlider("Icon Size", 16, 256, 8,
+        function() return db and db.iconSize or DEFAULTS.iconSize end,
+        function(v) if db then db.iconSize = v; display:SetSize(v, v) end end)
+
+    -- Display Options
+    SectionHeader("Display Options")
+    AddCheckbox("Show keybind text",
+        "Show the keybind for the suggested spell in the corner of the icon.",
+        function() return db and db.showKeybind or false end,
+        function(v) if db then db.showKeybind = v; if not v then keybindText:Hide() end end end)
+    AddCheckbox("Show out-of-range tint",
+        "Pulse the icon red when the suggested spell cannot reach your target.",
+        function() return db and db.showOutOfRange or false end,
+        function(v) if db then db.showOutOfRange = v; if not v then rangeOverlay:Hide() end end end)
+    AddCheckbox("Show cooldown spiral",
+        "Display a cooldown sweep on the icon. May cause UI taint — use with caution.",
+        function() return db and db.showCooldown or false end,
+        function(v) if db then db.showCooldown = v; if not v then cooldownFrame:Hide() end end end)
+    AddCheckbox("Play sounds",
+        "Play a subtle click when the icon appears as you enter combat.",
+        function() return db and db.sounds or false end,
+        function(v) if db then db.sounds = v end end)
+
+    -- Minimap
+    SectionHeader("Minimap")
+    AddCheckbox("Show minimap button",
+        "Show the HekiLight button on the minimap. Drag it to reposition.",
+        function() return db and db.minimapShow ~= false end,
+        function(v)
+            if db then
+                db.minimapShow = v
+                if minimapBtn then if v then minimapBtn:Show() else minimapBtn:Hide() end end
+            end
+        end)
+
+    -- Refresh all controls to current db values when the panel is shown
+    panel:SetScript("OnShow", function()
+        for _, ref in ipairs(checkboxRefs) do ref.cb:SetChecked(ref.getValue()) end
+        for _, ref in ipairs(sliderRefs) do
+            ref.slider:SetValue(ref.getValue())
+            _G[ref.name .. "Text"]:SetText(ref.label .. ": " .. ref.getValue())
+        end
+    end)
+
+    -- Footer hint
+    local hint = panel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    hint:SetPoint("TOPLEFT", 16, y - 12)
+    hint:SetText("/hkl for quick commands  ·  Drag the icon in-game to reposition  ·  /hkl lock to prevent accidental moves")
+
+    settingsCategory = Settings.RegisterCanvasLayoutCategory(panel, "HekiLight")
+    Settings.RegisterAddOnCategory(settingsCategory)
 end
 
 -- ── SBA Slot Detection ────────────────────────────────────────────────────────
@@ -343,6 +574,8 @@ events:SetScript("OnEvent", function(_, event, arg1)
     if event == "ADDON_LOADED" and arg1 == ADDON_NAME then
         InitDB()
         BuildUI()
+        BuildMinimapButton()
+        BuildSettingsPanel()
 
     elseif event == "PLAYER_LOGIN" or event == "PLAYER_ENTERING_WORLD" then
         RebuildSlotBindings()
@@ -386,6 +619,8 @@ local function PrintHelp()
     print("  /hkl poll  <seconds>   set poll rate (default 0.05)")
     print("  /hkl keybind on|off    toggle keybind text")
     print("  /hkl range on|off      toggle out-of-range tint")
+    print("  /hkl sounds on|off     toggle combat sounds")
+    print("  /hkl minimap on|off    toggle minimap button")
     print("  /hkl debug             toggle debug output")
     print("  /hkl status            print current SBA state")
 end
@@ -457,6 +692,24 @@ SlashCmdList["HEKILIGHT"] = function(msg)
         db.showOutOfRange = false
         rangeOverlay:Hide()
         print("|cff88ccffHekiLight:|r Out-of-range tint disabled.")
+
+    elseif msg == "sounds on" then
+        db.sounds = true
+        print("|cff88ccffHekiLight:|r Sounds enabled.")
+
+    elseif msg == "sounds off" then
+        db.sounds = false
+        print("|cff88ccffHekiLight:|r Sounds disabled.")
+
+    elseif msg == "minimap on" then
+        db.minimapShow = true
+        if minimapBtn then minimapBtn:Show() end
+        print("|cff88ccffHekiLight:|r Minimap button shown.")
+
+    elseif msg == "minimap off" then
+        db.minimapShow = false
+        if minimapBtn then minimapBtn:Hide() end
+        print("|cff88ccffHekiLight:|r Minimap button hidden.")
 
     elseif msg == "debug" then
         DEBUG = not DEBUG
