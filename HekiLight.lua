@@ -36,14 +36,6 @@ local DEFAULTS = {
     hideWhenCinematic = true,
     hideWhenResting   = true,
     hideWhenNoTarget  = true,
-    -- Defensive floater (C_CooldownViewer — opt-in)
-    defensiveEnabled   = false,  -- must be explicitly enabled
-    defensiveHealthPct = 0,       -- 0 = always show when CD ready; >0 = only when HP ≤ N%
-    defensiveIconSize  = 64,
-    defensiveScale     = 1.0,
-    defensiveX         = 100,    -- offset from screen center (pixels)
-    defensiveY         = 0,
-    defensiveLocked    = false,
 }
 
 -- ── State ────────────────────────────────────────────────────────────────────
@@ -53,9 +45,6 @@ local inCombat    = false
 local inCinematic = false  -- true while a cut-scene or pre-rendered movie is playing
 local elapsed     = 0
 local rangeTicker   -- C_Timer ticker for range overlay pulse animation
-
--- Defensive floater state
-local essentialCDs = {}  -- {cooldownID, spellID}[] — cached from C_CooldownViewer
 
 -- ── Frames ───────────────────────────────────────────────────────────────────
 
@@ -67,11 +56,6 @@ local iconTexture
 local cooldownFrame
 local keybindText
 local rangeOverlay  -- red tint when out of range
-
--- Defensive floater frame and widgets (created in BuildDefensiveUI)
-local defDisplay
-local defIconTexture
-local defCooldownFrame
 
 -- ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -246,54 +230,7 @@ local function BuildUI()
     Log("BuildUI complete, size=", size, "strata=HIGH level=10")
 end
 
--- ── Defensive Floater UI ──────────────────────────────────────────────────────
-
-local function BuildDefensiveUI()
-    local size = db.defensiveIconSize or 64
-
-    defDisplay = CreateFrame("Frame", "HekiLightDefensive", UIParent, "BackdropTemplate")
-    defDisplay:SetSize(size, size)
-    defDisplay:SetFrameStrata("HIGH")
-    defDisplay:SetFrameLevel(10)
-    defDisplay:SetPoint("CENTER", UIParent, "CENTER", db.defensiveX, db.defensiveY)
-
-    defDisplay:SetBackdrop({
-        bgFile   = "Interface\\Buttons\\WHITE8X8",
-        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-        tile     = true,
-        tileSize = 16,
-        edgeSize = 16,
-        insets   = { left = 4, right = 4, top = 4, bottom = 4 },
-    })
-    defDisplay:SetBackdropColor(0, 0, 0, 0.7)
-    defDisplay:SetBackdropBorderColor(0.2, 0.8, 0.2, 0.9)  -- green tint to distinguish from main
-    defDisplay:SetScale(db.defensiveScale or 1.0)
-
-    defDisplay:SetMovable(true)
-    defDisplay:EnableMouse(not db.defensiveLocked)
-    defDisplay:RegisterForDrag("LeftButton")
-    defDisplay:SetScript("OnDragStart", function(self)
-        if not db.defensiveLocked then self:StartMoving() end
-    end)
-    defDisplay:SetScript("OnDragStop", function(self)
-        self:StopMovingOrSizing()
-        local _, _, _, x, y = self:GetPoint()
-        db.defensiveX = math.floor(x + 0.5)
-        db.defensiveY = math.floor(y + 0.5)
-    end)
-
-    defIconTexture = defDisplay:CreateTexture(nil, "ARTWORK")
-    defIconTexture:SetAllPoints(defDisplay)
-    defIconTexture:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-
-    defCooldownFrame = CreateFrame("Cooldown", "HekiLightDefCooldown", defDisplay, "CooldownFrameTemplate")
-    defCooldownFrame:SetAllPoints(defDisplay)
-    defCooldownFrame:SetDrawEdge(true)
-    defCooldownFrame:SetHideCountdownNumbers(false)
-
-    defDisplay:Hide()
-    Log("BuildDefensiveUI complete")
-end
+-- ── Minimap Button ────────────────────────────────────────────────────────────
 
 local minimapBtn
 local settingsCategory
@@ -524,31 +461,6 @@ local function BuildSettingsPanel()
         function() return db.hideWhenNoTarget ~= false end,
         function(v) db.hideWhenNoTarget = v; Refresh() end, "right")
 
-    SectionHeader("Defensive Floater", "right")
-    AddCheckbox("Enable defensive floater",
-        "Show a second floating icon when an Essential cooldown (from Blizzard's Cooldown Manager) is off cooldown. Requires Cooldown Manager to be enabled in Gameplay options.",
-        function() return db.defensiveEnabled end,
-        function(v)
-            db.defensiveEnabled = v
-            if not v and defDisplay then defDisplay:Hide() end
-            RefreshDefensive()
-        end, "right")
-    AddSlider("Health threshold %", 0, 100, 5,
-        function() return db.defensiveHealthPct end,
-        function(v) db.defensiveHealthPct = v end, "right")
-    AddSlider("Def. Icon Size", 16, 256, 8,
-        function() return db.defensiveIconSize end,
-        function(v)
-            db.defensiveIconSize = v
-            if defDisplay then defDisplay:SetSize(v, v) end
-        end, "right")
-    AddSlider("Def. Scale", 0.2, 3.0, 0.1,
-        function() return db.defensiveScale end,
-        function(v)
-            db.defensiveScale = v
-            if defDisplay then defDisplay:SetScale(v) end
-        end, "right")
-
     -- Refresh all controls to current db values when the panel is shown
     panel:SetScript("OnShow", function()
         for _, ref in ipairs(checkboxRefs) do ref.cb:SetChecked(ref.getValue()) end
@@ -575,94 +487,6 @@ end
 local function IsAssistActive()
     return C_ActionBar.HasAssistedCombatActionButtons()
         or GetCVarBool("assistedCombatHighlight")
-end
-
--- ── Defensive Floater Logic ───────────────────────────────────────────────────
-
--- Returns true when the Cooldown Viewer is available AND the player enabled it.
-local function IsCooldownViewerEnabled()
-    if not db.defensiveEnabled then return false end
-    local ok = C_CooldownViewer and C_CooldownViewer.IsCooldownViewerAvailable
-               and C_CooldownViewer.IsCooldownViewerAvailable()
-    return ok == true
-end
-
--- Build the cached list of Essential cooldowns for this spec.
--- Called on login and on spec change.
-local function RebuildEssentialCDs()
-    wipe(essentialCDs)
-    if not (C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCategorySet) then
-        Log("C_CooldownViewer not available")
-        return
-    end
-    -- Category 0 = Essential
-    local ids = C_CooldownViewer.GetCooldownViewerCategorySet(0)
-    if not ids then return end
-    for _, cooldownID in ipairs(ids) do
-        local info = C_CooldownViewer.GetCooldownViewerCooldownInfo(cooldownID)
-        if info and info.isKnown and info.spellID then
-            table.insert(essentialCDs, { cooldownID = cooldownID, spellID = info.spellID })
-        end
-    end
-    Log("RebuildEssentialCDs: found", #essentialCDs, "known Essential CDs")
-end
-
--- Returns the spellID of the first Essential CD that is off cooldown, or nil.
--- Uses pcall because C_Spell.GetSpellCooldown returns secret number values in
--- Midnight 12.0 — they can't be compared directly. When the spell IS ready
--- (duration == 0, a plain number), the comparison succeeds. When it's on
--- cooldown (duration is a nonzero secret value), the comparison throws and
--- pcall catches it, which we correctly treat as "not ready".
-local function GetReadyDefensive()
-    for _, entry in ipairs(essentialCDs) do
-        local isReady = false
-        pcall(function()
-            local cd = C_Spell.GetSpellCooldown(entry.spellID)
-            if cd and cd.duration == 0 then
-                isReady = true
-            end
-        end)
-        if isReady then return entry.spellID end
-    end
-end
-
--- Returns true if the defensive floater should be shown for this spell.
-local function ShouldShowDefensive()
-    if not inCombat then return false end
-    if inCinematic then return false end
-    if db.hideWhenDead and UnitIsDeadOrGhost("player") then return false end
-    if db.defensiveHealthPct > 0 then
-        local hp = UnitHealthPercent("player")
-        if hp and hp > db.defensiveHealthPct then return false end
-    end
-    return true
-end
-
--- Refresh the defensive floater. Called from poll loop and SPELL_UPDATE_COOLDOWN.
-local function RefreshDefensive()
-    if not defDisplay then return end
-    if not IsCooldownViewerEnabled() then
-        defDisplay:Hide()
-        return
-    end
-
-    local spellID = GetReadyDefensive()
-    if not spellID or not ShouldShowDefensive() then
-        defDisplay:Hide()
-        return
-    end
-
-    -- Set icon
-    local info = C_Spell.GetSpellInfo(spellID)
-    if info and info.iconID then
-        defIconTexture:SetTexture(info.iconID)
-    end
-
-    -- Spell is off cooldown (GetReadyDefensive confirmed duration==0), so clear the spiral.
-    -- Passing secret values to SetCooldown is allowed, but comparing them is not.
-    defCooldownFrame:Clear()
-
-    defDisplay:Show()
 end
 
 -- Returns the suggested spellID from the rotation engine, plus the first
@@ -835,7 +659,6 @@ local function OnUpdate(_, dt)
     if elapsed >= db.pollRate then
         elapsed = 0
         Refresh()
-        RefreshDefensive()
     end
 end
 
@@ -870,33 +693,24 @@ events:RegisterEvent("CINEMATIC_START")         -- in-engine cut-scene begins
 events:RegisterEvent("CINEMATIC_STOP")          -- in-engine cut-scene ends
 events:RegisterEvent("PLAY_MOVIE")              -- pre-rendered movie begins
 events:RegisterEvent("STOP_MOVIE")              -- pre-rendered movie ends
-events:RegisterEvent("PLAYER_MOUNT_DISPLAY_CHANGED")     -- mount / dismount
-events:RegisterEvent("PLAYER_TARGET_CHANGED")            -- target swapped or cleared
-events:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")    -- spec swap — Essential CD list changes
-events:RegisterEvent("SPELL_UPDATE_COOLDOWN")            -- instant response when CD becomes ready
+events:RegisterEvent("PLAYER_MOUNT_DISPLAY_CHANGED")  -- mount / dismount
+events:RegisterEvent("PLAYER_TARGET_CHANGED")         -- target swapped or cleared
 
 events:SetScript("OnEvent", function(_, event, arg1)
     if event == "ADDON_LOADED" and arg1 == ADDON_NAME then
         InitDB()
         BuildUI()
-        BuildDefensiveUI()
         BuildMinimapButton()
         BuildSettingsPanel()
 
     elseif event == "PLAYER_LOGIN" or event == "PLAYER_ENTERING_WORLD" then
         RebuildSlotBindings()
-        RebuildEssentialCDs()
         -- Handle logging in while already in combat
         if UnitAffectingCombat("player") then
             inCombat = true
             if IsAssistActive() then StartPollLoop() end
         end
         Refresh()
-        RefreshDefensive()
-
-    elseif event == "PLAYER_SPECIALIZATION_CHANGED" then
-        RebuildEssentialCDs()
-        RefreshDefensive()
 
     elseif event == "PLAYER_REGEN_DISABLED" then
         inCombat = true
@@ -909,30 +723,21 @@ events:SetScript("OnEvent", function(_, event, arg1)
         inCombat = false
         StopPollLoop()
         display:Hide()
-        if defDisplay then defDisplay:Hide() end
         Log("Left combat")
 
     elseif event == "CINEMATIC_START" or event == "PLAY_MOVIE" then
         inCinematic = true
         display:Hide()
-        if defDisplay then defDisplay:Hide() end
         Log("Cinematic started — display hidden")
 
     elseif event == "CINEMATIC_STOP" or event == "STOP_MOVIE" then
         inCinematic = false
         Refresh()
-        RefreshDefensive()
         Log("Cinematic ended — refreshed")
 
     elseif event == "UNIT_FLAGS" or event == "UNIT_HEALTH" then
         -- Only care about the player unit; re-run Refresh so ShouldShow() acts immediately
-        if arg1 == "player" then
-            Refresh()
-            RefreshDefensive()
-        end
-
-    elseif event == "SPELL_UPDATE_COOLDOWN" then
-        if inCombat then RefreshDefensive() end
+        if arg1 == "player" then Refresh() end
 
     elseif event == "PLAYER_MOUNT_DISPLAY_CHANGED" or
            event == "PLAYER_TARGET_CHANGED" then
@@ -983,11 +788,8 @@ local function PrintHelp()
     print("  /hkl hide cinematic on|off toggle hide during cinematics")
     print("  /hkl hide resting on|off   toggle hide while resting")
     print("  /hkl hide target on|off    toggle hide with no hostile target")
-    print("  /hkl defensive on|off      toggle defensive floater")
-    print("  /hkl defensivehp <0–100>   set health threshold (0 = always show)")
-    print("  /hkl defensive reset       reset defensive floater position")
     print("  /hkl debug             toggle debug output")
-    print("  /hkl status            print current status")
+    print("  /hkl status            print current SBA state")
 end
 
 SLASH_HEKILIGHT1 = "/hekilight"
@@ -1131,46 +933,6 @@ SlashCmdList["HEKILIGHT"] = function(msg)
             print("  Suppression: |cff00ff00none|r — icon allowed to show")
         else
             print("  Suppression: |cffff4444" .. suppressReason .. "|r — icon hidden")
-        end
-
-        -- Defensive floater status
-        local cvAvail = C_CooldownViewer and C_CooldownViewer.IsCooldownViewerAvailable
-                        and C_CooldownViewer.IsCooldownViewerAvailable()
-        print("  Defensive floater:", db.defensiveEnabled and "|cff00ff00enabled|r" or "|cffff4444disabled|r")
-        print("  CooldownViewer available:", tostring(cvAvail == true))
-        print("  Essential CDs cached:", #essentialCDs)
-        if db.defensiveHealthPct > 0 then
-            print("  Health threshold: ≤" .. db.defensiveHealthPct .. "%")
-        else
-            print("  Health threshold: none (always show when ready)")
-        end
-
-    elseif msg == "defensive on" then
-        db.defensiveEnabled = true
-        RefreshDefensive()
-        print("|cff88ccffHekiLight:|r Defensive floater enabled.")
-
-    elseif msg == "defensive off" then
-        db.defensiveEnabled = false
-        if defDisplay then defDisplay:Hide() end
-        print("|cff88ccffHekiLight:|r Defensive floater disabled.")
-
-    elseif msg == "defensive reset" then
-        db.defensiveX, db.defensiveY = DEFAULTS.defensiveX, DEFAULTS.defensiveY
-        if defDisplay then
-            defDisplay:ClearAllPoints()
-            defDisplay:SetPoint("CENTER", UIParent, "CENTER", db.defensiveX, db.defensiveY)
-        end
-        print("|cff88ccffHekiLight:|r Defensive floater position reset.")
-
-    elseif msg:find("^defensivehp%s") then
-        local v = tonumber(msg:match("^defensivehp%s+(.+)$"))
-        if v and v >= 0 and v <= 100 then
-            db.defensiveHealthPct = v
-            local desc = v == 0 and "always show when CD ready" or ("show when HP ≤ " .. v .. "%")
-            print("|cff88ccffHekiLight:|r Defensive HP threshold → " .. desc)
-        else
-            print("|cff88ccffHekiLight:|r Health threshold must be between 0 and 100 (0 = always show).")
         end
 
     else
