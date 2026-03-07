@@ -578,7 +578,7 @@ local function ShouldShow()
     if db.hideWhenResting and IsResting() then
         return false, "resting"
     end
-    if db.hideWhenNoTarget and not UnitCanAttack("player", "target") then
+    if db.hideWhenNoTarget and not inCombat and not UnitCanAttack("player", "target") then
         return false, "no hostile target"
     end
     return true
