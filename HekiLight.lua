@@ -575,7 +575,7 @@ local function ShouldShow()
     if db.hideWhenCinematic and inCinematic then
         return false, "cinematic"
     end
-    if db.hideWhenResting and IsResting() then
+    if db.hideWhenResting and not inCombat and IsResting() then
         return false, "resting"
     end
     if db.hideWhenNoTarget and not inCombat and not UnitCanAttack("player", "target") then
