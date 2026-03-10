@@ -717,8 +717,10 @@ local function IsSpellAvailable(spellID)
 end
 
 -- Returns true when spellID is currently on cooldown (or inside the post-cast
--- grace window). Clears the grace-period entry once the spell is truly off CD.
--- Also catches inherent CDs on spells that haven't been cast this session.
+-- grace window). Only tracks spells in recentlyCastSpells — untracked spells
+-- are trusted to the engine. We must NOT fall back to IsSpellAvailable() for
+-- untracked spells: the GCD sets duration > 0 for all spells, which would
+-- incorrectly mark every rotation spell as on-CD every frame in combat.
 local function IsSpellOnCooldown(sid)
     if recentlyCastSpells[sid] then
         local pastGrace = (GetTime() - recentlyCastSpells[sid]) > MIN_CD_GRACE
@@ -728,7 +730,7 @@ local function IsSpellOnCooldown(sid)
         end
         return true
     end
-    return not IsSpellAvailable(sid)
+    return false
 end
 
 
