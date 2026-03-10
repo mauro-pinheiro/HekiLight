@@ -14,7 +14,7 @@ Everything lives in `HekiLight.lua`. The file is structured in clearly labelled 
 
 ```
 ADDON_LOADED → InitDB() → BuildUI() → BuildMinimapButton() → BuildSettingsPanel() → BuildIgnorePanel()
-PLAYER_LOGIN → RebuildSlotBindings() → Refresh()
+PLAYER_ENTERING_WORLD → RebuildSlotBindings() → Refresh()
 ```
 
 ### Core loop
@@ -72,6 +72,7 @@ C_ActionBar.IsActionInRange(slotID)                -- range check
 C_Spell.GetSpellInfo(spellID)                      -- icon ID, spell name
 C_Spell.GetSpellCooldown(spellID)                  -- cooldown (pcall-guarded)
 C_SpellActivationOverlay.IsSpellOverlayed(spellID) -- proc glow active?
+IsPlayerSpell(spellID)                             -- guard: skip spells not yet learned (C_AssistedCombat.GetRotationSpells returns all spec spells, learned or not)
 Settings.RegisterCanvasLayoutCategory(panel, name)           -- main settings category
 Settings.RegisterCanvasLayoutSubcategory(parent, panel, name) -- child category (Ignored Spells)
 ```
