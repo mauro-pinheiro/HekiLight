@@ -8,6 +8,7 @@
 --   C_ActionBar.IsAssistedCombatAction(slotID)       → bool
 --   C_AssistedCombat.GetNextCastSpell(false)         → spellID  (primary suggestion)
 --   C_AssistedCombat.GetRotationSpells()             → {spellID, ...}  (full queue)
+--   C_Spell.GetSpellCooldown(spellID)                → cooldown info (pcall-guarded; secret values)
 
 local ADDON_NAME = "HekiLight"
 local DEBUG = false  -- toggle with /hkl debug
@@ -46,6 +47,13 @@ local DEFAULTS = {
 
 local db            -- points at HekiLightDB after ADDON_LOADED
 local inCombat    = false
+-- spellID → GetTime() when cast.  Only spells in this table are checked for
+-- cooldowns; spells never cast are trusted to the SBA engine.
+-- Stored as a timestamp so we can enforce a post-cast grace period that
+-- outlasts the GCD-to-real-CD transition window (engine briefly reports
+-- duration=0 at GCD end before the real cooldown value is applied).
+local recentlyCastSpells = {}
+local MIN_CD_GRACE = 2.0  -- seconds after a cast before we trust duration==0 as "truly off CD"
 local inCinematic = false  -- true while a cut-scene or pre-rendered movie is playing
 local elapsed     = 0
 local rangeTicker   -- C_Timer ticker for range overlay pulse animation
@@ -515,8 +523,23 @@ end
 
 -- ── Spell Suggestion Detection ───────────────────────────────────────────────
 
--- Returns true when the rotation assistance system is active in any mode.
--- Used to decide whether to start the combat poll loop.
+-- Returns true if spellID can be cast right now (off cooldown / has a charge).
+-- Uses the secret-number pcall trick on C_Spell.GetSpellCooldown:
+--   • duration == 0 (off CD / has a charge) → plain 0 → comparison succeeds → true
+--   • duration > 0 (on CD / no charges left) → secret value → comparison throws
+--     → pcall catches the error → returns false
+local function IsSpellAvailable(spellID)
+    local available = false
+    pcall(function()
+        local cd = C_Spell.GetSpellCooldown(spellID)
+        if cd and cd.duration == 0 then
+            available = true
+        end
+    end)
+    return available
+end
+
+
 local function IsAssistActive()
     return C_ActionBar.HasAssistedCombatActionButtons()
         or GetCVarBool("assistedCombatHighlight")
@@ -607,13 +630,13 @@ end
 
 -- Returns up to n { spellID, realSlotID } entries representing the current
 -- rotation queue.  Slot 1 is always the active SBA suggestion (GetNextCastSpell).
--- Slots 2..n come from C_AssistedCombat.GetRotationSpells() (Midnight 12.0+),
--- skipping the primary spell and any spell currently on a real cooldown.
+-- Slots 2..n come from C_AssistedCombat.GetRotationSpells() (Midnight 12.0+).
 --
--- Cooldown check uses GetActionCooldown(slotID) — a slot-based global that
--- returns plain numbers, safe to compare in OnUpdate without taint issues.
--- C_Spell.GetSpellCooldown is intentionally avoided: its timing fields are
--- tainted secret values that cannot be compared from addon code.
+-- Cooldown filter: only spells the player has actually cast (tracked in
+-- recentlyCastSpells) are checked via IsSpellAvailable.  Spells never cast are
+-- shown as-is — the SBA engine is trusted to include them appropriately.
+-- Once a tracked spell is detected as available again, it is removed from the
+-- set so it flows freely on future polls.
 local function GetSuggestionQueue(n)
     local queue = {}
     local primaryID, primarySlot = GetActiveSuggestion()
@@ -624,22 +647,17 @@ local function GetSuggestionQueue(n)
         if ok and rotSpells then
             for _, sid in ipairs(rotSpells) do
                 if sid ~= primaryID then
-                    local realSlot = GetRealSlot(sid)
-                    -- Skip spells with a real cooldown (> GCD length ~1.5s).
-                    -- Both GetActionCooldown and C_Spell.GetSpellCooldown can
-                    -- return tainted secret values in an OnUpdate context; wrap
-                    -- the comparison in pcall so a taint error is caught rather
-                    -- than propagated.  On failure we default to onCd = false
-                    -- (show the spell) — better to show too many than too few.
-                    local onCd = false
-                    if realSlot then
-                        local start, dur = GetActionCooldown(realSlot)
-                        local ok2, result = pcall(function()
-                            return dur > 1.5 and (start + dur - GetTime()) > 0
-                        end)
-                        onCd = ok2 and result == true
+                    local onCooldown = false
+                    if recentlyCastSpells[sid] then
+                        local pastGrace = (GetTime() - recentlyCastSpells[sid]) > MIN_CD_GRACE
+                        if pastGrace and IsSpellAvailable(sid) then
+                            recentlyCastSpells[sid] = nil  -- truly off CD, stop tracking
+                        else
+                            onCooldown = true              -- in grace period or still on CD
+                        end
                     end
-                    if not onCd then
+                    if not onCooldown then
+                        local realSlot = GetRealSlot(sid)
                         queue[#queue + 1] = { spellID = sid, realSlotID = realSlot }
                         if #queue >= n then break end
                     end
@@ -864,8 +882,9 @@ events:RegisterEvent("PLAYER_MOUNT_DISPLAY_CHANGED")  -- mount / dismount
 events:RegisterEvent("PLAYER_TARGET_CHANGED")         -- target swapped or cleared
 events:RegisterEvent("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW")  -- proc glow appears
 events:RegisterEvent("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE")  -- proc glow fades
+events:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED")             -- track casts for CD filter
 
-events:SetScript("OnEvent", function(_, event, arg1)
+events:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
     if event == "ADDON_LOADED" and arg1 == ADDON_NAME then
         InitDB()
         BuildSlots()
@@ -934,6 +953,14 @@ events:SetScript("OnEvent", function(_, event, arg1)
         -- A proc glow faded — if it was our current suggestion, stop pulsing
         if arg1 == currentSuggestionID then
             StopGlowPulse()
+        end
+
+    elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
+        -- arg1 = unit, arg2 = castGUID, arg3 = spellID
+        -- Record every player cast so the cooldown filter knows which spells
+        -- to check.  Spells never cast are always shown (trusted to the engine).
+        if arg1 == "player" and arg3 then
+            recentlyCastSpells[arg3] = GetTime()
         end
     end
 end)

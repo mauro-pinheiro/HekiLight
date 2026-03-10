@@ -10,6 +10,7 @@ Hekili ended with the Midnight pre-patch because Blizzard removed the APIs neede
 
 - 🎯 Shows up to **N spell icons** from the SBA rotation queue (default: 3, configurable 1–5)
 - 🥇 First icon is always the **currently highlighted suggestion** (the spell to cast right now)
+- 🚫 Secondary slots automatically hide spells that are on cooldown — tracked per-cast, so pre-pull cooldowns are respected too
 - ⌨️ Displays the keybind for the primary spell (like Hekili did)
 - ⏱️ Cooldown spiral overlay on the primary icon
 - 🔴 Pulsing out-of-range tint when the suggested spell can't reach your target
