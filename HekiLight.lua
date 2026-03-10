@@ -49,6 +49,12 @@ local db            -- points at HekiLightDB after ADDON_LOADED
 local inCombat    = false
 local inCinematic = false  -- true while a cut-scene or pre-rendered movie is playing
 local elapsed     = 0
+-- Spells with a real cooldown (base CD > 1.5 s) that the player has cast.
+-- Used to grey secondary icons while the spell is on its real CD.
+-- Populated by UNIT_SPELLCAST_SUCCEEDED; entries cleared by IsSpellOnCooldown
+-- once IsSpellAvailable returns true (the secret-number pcall trick ensures
+-- this only happens when the spell is truly off cooldown, not just off GCD).
+local recentlyCastSpells = {}
 local rangeTicker   -- C_Timer ticker for range overlay pulse animation
 local glowTicker    -- C_Timer ticker for proc-glow border pulse animation
 local isGlowActive  = false
@@ -709,20 +715,18 @@ local function IsSpellAvailable(spellID)
     return available
 end
 
--- Returns true when spellID has an active cooldown longer than the GCD.
--- The GCD is ≤1.5s; real spell CDs are always longer. Checking duration
--- directly avoids false-positives from the GCD affecting all spells in
--- active combat (a cast-history approach was tried and caused every
--- rotation spell to appear "on CD" during the 2s post-cast grace window).
+-- Returns true when spellID has been cast and is still on its real cooldown.
+-- Only spells with GetSpellBaseCooldown > 1500 ms are ever tracked (filters
+-- out GCD-only spells). IsSpellAvailable uses the secret-number pcall trick —
+-- it returns true only when duration is plain 0, which means truly off CD
+-- (not just off GCD), so no grace period is needed.
 local function IsSpellOnCooldown(sid)
-    local onCD = false
-    pcall(function()
-        local cd = C_Spell.GetSpellCooldown(sid)
-        if cd and cd.duration > 1.5 then
-            onCD = true
-        end
-    end)
-    return onCD
+    if not recentlyCastSpells[sid] then return false end
+    if IsSpellAvailable(sid) then
+        recentlyCastSpells[sid] = nil
+        return false
+    end
+    return true
 end
 
 
@@ -1084,6 +1088,7 @@ events:RegisterEvent("PLAYER_MOUNT_DISPLAY_CHANGED")  -- mount / dismount
 events:RegisterEvent("PLAYER_TARGET_CHANGED")         -- target swapped or cleared
 events:RegisterEvent("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW")  -- proc glow appears
 events:RegisterEvent("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE")  -- proc glow fades
+events:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED")             -- track real-CD casts for grey filter
 
 events:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
     if event == "ADDON_LOADED" and arg1 == ADDON_NAME then
@@ -1154,6 +1159,18 @@ events:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
         -- A proc glow faded — if it was our current suggestion, stop pulsing
         if arg1 == currentSuggestionID then
             StopGlowPulse()
+        end
+
+    elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
+        -- arg1 = unit, arg2 = castGUID, arg3 = spellID
+        -- Track spells with a real cooldown (base CD > 1.5 s) so secondary
+        -- icons can be greyed while they are on cooldown.
+        -- GetSpellBaseCooldown returns base CD in ms as a plain Lua number.
+        if arg1 == "player" and arg3 then
+            local baseCDms = GetSpellBaseCooldown(arg3) or 0
+            if baseCDms > 1500 then
+                recentlyCastSpells[arg3] = true
+            end
         end
     end
 end)
