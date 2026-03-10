@@ -608,7 +608,12 @@ end
 -- Returns up to n { spellID, realSlotID } entries representing the current
 -- rotation queue.  Slot 1 is always the active SBA suggestion (GetNextCastSpell).
 -- Slots 2..n come from C_AssistedCombat.GetRotationSpells() (Midnight 12.0+),
--- with the primary spell skipped to avoid duplication.
+-- skipping the primary spell and any spell currently on a real cooldown.
+--
+-- Cooldown check uses GetActionCooldown(slotID) — a slot-based global that
+-- returns plain numbers, safe to compare in OnUpdate without taint issues.
+-- C_Spell.GetSpellCooldown is intentionally avoided: its timing fields are
+-- tainted secret values that cannot be compared from addon code.
 local function GetSuggestionQueue(n)
     local queue = {}
     local primaryID, primarySlot = GetActiveSuggestion()
@@ -619,8 +624,25 @@ local function GetSuggestionQueue(n)
         if ok and rotSpells then
             for _, sid in ipairs(rotSpells) do
                 if sid ~= primaryID then
-                    queue[#queue + 1] = { spellID = sid, realSlotID = GetRealSlot(sid) }
-                    if #queue >= n then break end
+                    local realSlot = GetRealSlot(sid)
+                    -- Skip spells with a real cooldown (> GCD length ~1.5s).
+                    -- Both GetActionCooldown and C_Spell.GetSpellCooldown can
+                    -- return tainted secret values in an OnUpdate context; wrap
+                    -- the comparison in pcall so a taint error is caught rather
+                    -- than propagated.  On failure we default to onCd = false
+                    -- (show the spell) — better to show too many than too few.
+                    local onCd = false
+                    if realSlot then
+                        local start, dur = GetActionCooldown(realSlot)
+                        local ok2, result = pcall(function()
+                            return dur > 1.5 and (start + dur - GetTime()) > 0
+                        end)
+                        onCd = ok2 and result == true
+                    end
+                    if not onCd then
+                        queue[#queue + 1] = { spellID = sid, realSlotID = realSlot }
+                        if #queue >= n then break end
+                    end
                 end
             end
         end
