@@ -77,6 +77,7 @@ local function InitDB()
     for k, v in pairs(DEFAULTS) do
         if db[k] == nil then db[k] = v end
     end
+    if db.ignoredSpells == nil then db.ignoredSpells = {} end
 end
 
 local function ApplyPosition()
@@ -502,19 +503,160 @@ local function BuildSettingsPanel()
         function() return db.showWhenAttackableTarget ~= false end,
         function(v) db.showWhenAttackableTarget = v; Refresh() end, "right")
 
-    -- Refresh all controls to current db values when the panel is shown
+    -- ── Ignored Spells Section (full-width, below both columns) ─────────────────
+
+    local ignoreY = math.min(cols.left.y, cols.right.y) - 20
+
+    local divider = panel:CreateTexture(nil, "ARTWORK")
+    divider:SetPoint("TOPLEFT", 12, ignoreY)
+    divider:SetSize(600, 1)
+    divider:SetColorTexture(0.3, 0.3, 0.3, 0.8)
+    ignoreY = ignoreY - 22
+
+    local ignoreHeader = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    ignoreHeader:SetPoint("TOPLEFT", 16, ignoreY)
+    ignoreHeader:SetText("Ignored Spells")
+    ignoreY = ignoreY - 18
+
+    local ignoreDesc = panel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    ignoreDesc:SetPoint("TOPLEFT", 16, ignoreY)
+    ignoreDesc:SetText("Spells hidden from the secondary suggestion list. The dropdown shows your current rotation spells.")
+    ignoreY = ignoreY - 30
+
+    -- Forward declarations so button-script closures can reference both functions
+    local selectedIgnoreSpellID = nil
+    local rowPool = {}
+    local PopulateRotationDropdown
+    local RefreshIgnoreList
+
+    -- UIDropDownMenu has ~18 px of inherent left padding; offset x by -2 to align
+    local ignoreDD = CreateFrame("Frame", "HekiLightIgnoreDropdown", panel, "UIDropDownMenuTemplate")
+    ignoreDD:SetPoint("TOPLEFT", -2, ignoreY)
+    UIDropDownMenu_SetWidth(ignoreDD, 270)
+    UIDropDownMenu_SetText(ignoreDD, "Select a rotation spell...")
+
+    local addBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+    addBtn:SetPoint("LEFT", ignoreDD, "RIGHT", -4, 2)
+    addBtn:SetSize(150, 22)
+    addBtn:SetText("Add to ignore list")
+    addBtn:SetScript("OnClick", function()
+        if not selectedIgnoreSpellID then
+            print("|cff88ccffHekiLight:|r Select a spell from the dropdown first.")
+            return
+        end
+        if db.ignoredSpells[selectedIgnoreSpellID] then
+            print("|cff88ccffHekiLight:|r That spell is already ignored.")
+            return
+        end
+        db.ignoredSpells[selectedIgnoreSpellID] = true
+        local si = C_Spell.GetSpellInfo(selectedIgnoreSpellID)
+        local name = si and si.name or tostring(selectedIgnoreSpellID)
+        print("|cff88ccffHekiLight:|r " .. name .. " [" .. selectedIgnoreSpellID .. "] will no longer appear in the secondary list.")
+        selectedIgnoreSpellID = nil
+        UIDropDownMenu_SetText(ignoreDD, "Select a rotation spell...")
+        PopulateRotationDropdown()
+        RefreshIgnoreList()
+    end)
+
+    local listBaseY = ignoreY - 36
+
+    PopulateRotationDropdown = function()
+        UIDropDownMenu_Initialize(ignoreDD, function(self, level)
+            local ok, rotSpells = pcall(C_AssistedCombat.GetRotationSpells)
+            if not ok or not rotSpells or #rotSpells == 0 then
+                local info    = UIDropDownMenu_CreateInfo()
+                info.text     = "|cff888888No rotation spells available|r"
+                info.disabled = true
+                UIDropDownMenu_AddButton(info, level)
+                return
+            end
+            for _, sid in ipairs(rotSpells) do
+                local si = C_Spell.GetSpellInfo(sid)
+                if si then
+                    local ignored      = db.ignoredSpells[sid] == true
+                    local info         = UIDropDownMenu_CreateInfo()
+                    info.text          = (ignored and "|cff888888" or "")
+                                        .. si.name
+                                        .. "  |cff666666[" .. sid .. "]|r"
+                                        .. (ignored and " (hidden)|r" or "")
+                    info.icon          = si.iconID
+                    info.disabled      = ignored
+                    local capturedSid  = sid
+                    local capturedName = si.name
+                    info.func = function()
+                        selectedIgnoreSpellID = capturedSid
+                        UIDropDownMenu_SetText(ignoreDD, capturedName .. " [" .. capturedSid .. "]")
+                    end
+                    UIDropDownMenu_AddButton(info, level)
+                end
+            end
+        end)
+    end
+
+    RefreshIgnoreList = function()
+        for _, row in ipairs(rowPool) do row:Hide() end
+
+        local sorted = {}
+        for sid in pairs(db.ignoredSpells) do sorted[#sorted + 1] = sid end
+        table.sort(sorted)
+
+        local rowIdx = 0
+        for _, sid in ipairs(sorted) do
+            rowIdx = rowIdx + 1
+            local row = rowPool[rowIdx]
+            if not row then
+                row = CreateFrame("Frame", nil, panel)
+                row:SetSize(580, 24)
+                row.icon = row:CreateTexture(nil, "ARTWORK")
+                row.icon:SetSize(20, 20)
+                row.icon:SetPoint("LEFT", 4, 0)
+                row.label = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+                row.label:SetPoint("LEFT", row.icon, "RIGHT", 6, 0)
+                row.label:SetWidth(420)
+                row.label:SetJustifyH("LEFT")
+                row.removeBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+                row.removeBtn:SetSize(70, 20)
+                row.removeBtn:SetPoint("RIGHT", row, "RIGHT", 0, 0)
+                row.removeBtn:SetText("Remove")
+                rowPool[rowIdx] = row
+            end
+
+            local capturedSid = sid
+            local si = C_Spell.GetSpellInfo(sid)
+            row.icon:SetTexture(si and si.iconID or "Interface\\Icons\\INV_Misc_QuestionMark")
+            row.label:SetText((si and si.name or "(unknown)")
+                              .. "  |cff888888[" .. sid .. "]|r")
+            row.removeBtn:SetScript("OnClick", function()
+                db.ignoredSpells[capturedSid] = nil
+                PopulateRotationDropdown()
+                RefreshIgnoreList()
+            end)
+            row:SetPoint("TOPLEFT", 16, listBaseY - (rowIdx - 1) * 26)
+            row:Show()
+        end
+
+        if not panel.ignoreEmptyLabel then
+            panel.ignoreEmptyLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+            panel.ignoreEmptyLabel:SetPoint("TOPLEFT", 16, listBaseY)
+            panel.ignoreEmptyLabel:SetText("No spells are currently ignored.")
+        end
+        panel.ignoreEmptyLabel:SetShown(rowIdx == 0)
+    end
+
+    -- Refresh all controls when the panel opens (existing + new ignore widgets)
     panel:SetScript("OnShow", function()
         for _, ref in ipairs(checkboxRefs) do ref.cb:SetChecked(ref.getValue()) end
         for _, ref in ipairs(sliderRefs) do
             ref.slider:SetValue(ref.getValue())
             ref.labelStr:SetText(ref.label .. ": " .. ref.getValue())
         end
+        PopulateRotationDropdown()
+        RefreshIgnoreList()
     end)
 
-    -- Footer hint below the deepest column
-    local footerY = math.min(cols.left.y, cols.right.y) - 12
+    -- Footer hint (fixed offset below the ignore list area; canvas scrolls in 10.x+)
     local hint = panel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    hint:SetPoint("TOPLEFT", 16, footerY)
+    hint:SetPoint("TOPLEFT", 16, listBaseY - 180)
     hint:SetText("/hkl for quick commands  ·  Drag the icon in-game to reposition  ·  /hkl lock to prevent accidental moves")
 
     settingsCategory = Settings.RegisterCanvasLayoutCategory(panel, "HekiLight")
@@ -646,7 +788,7 @@ local function GetSuggestionQueue(n)
         local ok, rotSpells = pcall(C_AssistedCombat.GetRotationSpells)
         if ok and rotSpells then
             for _, sid in ipairs(rotSpells) do
-                if sid ~= primaryID then
+                if sid ~= primaryID and not db.ignoredSpells[sid] then
                     local onCooldown = false
                     if recentlyCastSpells[sid] then
                         local pastGrace = (GetTime() - recentlyCastSpells[sid]) > MIN_CD_GRACE
@@ -996,6 +1138,9 @@ local function PrintHelp()
     print("  /hkl hide cinematic on|off toggle always-hide during cinematics")
     print("  /hkl show combat on|off    toggle show when in combat")
     print("  /hkl show target on|off    toggle show when target is attackable")
+    print("  /hkl ignore <spellID>      hide a spell from the secondary list")
+    print("  /hkl unignore <spellID>    re-show a spell in the secondary list")
+    print("  /hkl ignorelist            list ignored spells")
     print("  /hkl debug                 toggle debug output")
     print("  /hkl status                print current SBA state")
 end
@@ -1140,6 +1285,45 @@ SlashCmdList["HEKILIGHT"] = function(msg)
             print("|cff88ccffHekiLight:|r " .. def.label .. ": " .. state:upper())
         else
             print("|cff88ccffHekiLight:|r Unknown flag. Valid: combat, target")
+        end
+
+    elseif msg:find("^ignore%s") then
+        local arg = strtrim(msg:match("^ignore%s+(.+)$") or "")
+        local sid = tonumber(arg)
+        if sid then
+            db.ignoredSpells[sid] = true
+            local si = C_Spell.GetSpellInfo(sid)
+            local name = si and si.name or tostring(sid)
+            print("|cff88ccffHekiLight:|r " .. name .. " [" .. sid .. "] will no longer appear in the secondary list.")
+        else
+            print("|cff88ccffHekiLight:|r Usage: /hkl ignore <spellID>")
+        end
+
+    elseif msg:find("^unignore%s") then
+        local arg = strtrim(msg:match("^unignore%s+(.+)$") or "")
+        local sid = tonumber(arg)
+        if sid then
+            db.ignoredSpells[sid] = nil
+            local si = C_Spell.GetSpellInfo(sid)
+            local name = si and si.name or tostring(sid)
+            print("|cff88ccffHekiLight:|r " .. name .. " [" .. sid .. "] restored to the secondary list.")
+        else
+            print("|cff88ccffHekiLight:|r Usage: /hkl unignore <spellID>")
+        end
+
+    elseif msg == "ignorelist" then
+        local sorted = {}
+        for sid in pairs(db.ignoredSpells) do sorted[#sorted + 1] = sid end
+        table.sort(sorted)
+        if #sorted == 0 then
+            print("|cff88ccffHekiLight:|r No spells are hidden from the secondary list.")
+        else
+            print("|cff88ccffHekiLight:|r Spells hidden from the secondary list:")
+            for _, sid in ipairs(sorted) do
+                local si = C_Spell.GetSpellInfo(sid)
+                local name = si and si.name or "(unknown)"
+                print("  " .. name .. " [" .. sid .. "]  — /hkl unignore " .. sid .. " to restore")
+            end
         end
 
     elseif msg == "debug" then
