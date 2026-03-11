@@ -46,6 +46,7 @@ local DEFAULTS = {
 -- ── State ────────────────────────────────────────────────────────────────────
 
 local db            -- points at HekiLightDB after ADDON_LOADED
+local dbChar        -- points at HekiLightDBChar after ADDON_LOADED (per-character)
 local inCombat    = false
 local inCinematic = false  -- true while a cut-scene or pre-rendered movie is playing
 local elapsed     = 0
@@ -82,7 +83,9 @@ local function InitDB()
     for k, v in pairs(DEFAULTS) do
         if db[k] == nil then db[k] = v end
     end
-    if db.ignoredSpells == nil then db.ignoredSpells = {} end
+    HekiLightDBChar = HekiLightDBChar or {}
+    dbChar = HekiLightDBChar
+    if dbChar.ignoredSpells == nil then dbChar.ignoredSpells = {} end
 end
 
 local function ApplyPosition()
@@ -584,11 +587,11 @@ BuildIgnorePanel = function(parentCategory)
             print("|cff88ccffHekiLight:|r Select a spell from the dropdown first.")
             return
         end
-        if db.ignoredSpells[selectedIgnoreSpellID] then
+        if dbChar.ignoredSpells[selectedIgnoreSpellID] then
             print("|cff88ccffHekiLight:|r That spell is already ignored.")
             return
         end
-        db.ignoredSpells[selectedIgnoreSpellID] = true
+        dbChar.ignoredSpells[selectedIgnoreSpellID] = true
         local si = C_Spell.GetSpellInfo(selectedIgnoreSpellID)
         local name = si and si.name or tostring(selectedIgnoreSpellID)
         print("|cff88ccffHekiLight:|r " .. name .. " [" .. selectedIgnoreSpellID .. "] will no longer appear in the secondary list.")
@@ -614,7 +617,7 @@ BuildIgnorePanel = function(parentCategory)
                             sid     = sid,
                             name    = si.name,
                             iconID  = si.iconID,
-                            ignored = db.ignoredSpells[sid],
+                            ignored = dbChar.ignoredSpells[sid],
                         }
                     end
                 end
@@ -655,7 +658,7 @@ BuildIgnorePanel = function(parentCategory)
         for _, row in ipairs(rowPool) do row:Hide() end
 
         local sorted = {}
-        for sid in pairs(db.ignoredSpells) do sorted[#sorted + 1] = sid end
+        for sid in pairs(dbChar.ignoredSpells) do sorted[#sorted + 1] = sid end
         table.sort(sorted)
 
         local rowIdx = 0
@@ -685,7 +688,7 @@ BuildIgnorePanel = function(parentCategory)
             row.label:SetText((si and si.name or "(unknown)")
                               .. "  |cff888888[" .. sid .. "]|r")
             row.removeBtn:SetScript("OnClick", function()
-                db.ignoredSpells[capturedSid] = nil
+                dbChar.ignoredSpells[capturedSid] = nil
                 PopulateRotationDropdown()
                 RefreshIgnoreList()
             end)
@@ -862,7 +865,7 @@ local function GetSuggestionQueue(n)
             -- Pass 1: off-cooldown spells fill slots first (high priority)
             for _, sid in ipairs(rotSpells) do
                 if queueCount >= n then break end
-                if sid ~= primaryID and not db.ignoredSpells[sid] and IsPlayerSpell(sid) then
+                if sid ~= primaryID and not dbChar.ignoredSpells[sid] and IsPlayerSpell(sid) then
                     if not IsSpellOnCooldown(sid) then
                         queueCount = queueCount + 1
                         queueCache[queueCount].spellID    = sid
@@ -875,7 +878,7 @@ local function GetSuggestionQueue(n)
             if queueCount < n then
                 for _, sid in ipairs(rotSpells) do
                     if queueCount >= n then break end
-                    if sid ~= primaryID and not db.ignoredSpells[sid] and IsPlayerSpell(sid) then
+                    if sid ~= primaryID and not dbChar.ignoredSpells[sid] and IsPlayerSpell(sid) then
                         if IsSpellOnCooldown(sid) then
                             queueCount = queueCount + 1
                             queueCache[queueCount].spellID    = sid
@@ -1378,7 +1381,7 @@ SlashCmdList["HEKILIGHT"] = function(msg)
         local arg = strtrim(msg:match("^ignore%s+(.+)$") or "")
         local sid = tonumber(arg)
         if sid then
-            db.ignoredSpells[sid] = true
+            dbChar.ignoredSpells[sid] = true
             local si = C_Spell.GetSpellInfo(sid)
             local name = si and si.name or tostring(sid)
             print("|cff88ccffHekiLight:|r " .. name .. " [" .. sid .. "] will no longer appear in the secondary list.")
@@ -1391,7 +1394,7 @@ SlashCmdList["HEKILIGHT"] = function(msg)
         local arg = strtrim(msg:match("^unignore%s+(.+)$") or "")
         local sid = tonumber(arg)
         if sid then
-            db.ignoredSpells[sid] = nil
+            dbChar.ignoredSpells[sid] = nil
             local si = C_Spell.GetSpellInfo(sid)
             local name = si and si.name or tostring(sid)
             print("|cff88ccffHekiLight:|r " .. name .. " [" .. sid .. "] restored to the secondary list.")
@@ -1402,7 +1405,7 @@ SlashCmdList["HEKILIGHT"] = function(msg)
 
     elseif msg == "ignorelist" then
         local sorted = {}
-        for sid in pairs(db.ignoredSpells) do sorted[#sorted + 1] = sid end
+        for sid in pairs(dbChar.ignoredSpells) do sorted[#sorted + 1] = sid end
         table.sort(sorted)
         if #sorted == 0 then
             print("|cff88ccffHekiLight:|r No spells are hidden from the secondary list.")
