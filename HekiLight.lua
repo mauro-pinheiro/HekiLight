@@ -265,13 +265,13 @@ local function BuildSlots()
                 if rangeTicker then rangeTicker:Cancel(); rangeTicker = nil end
             end)
             slot.rangeOverlay = rangeOvl
-
-            -- Keybind label — NumberFontNormal is the same font Blizzard uses on action buttons
-            slot.keybindText = slot.frame:CreateFontString(nil, "OVERLAY")
-            slot.keybindText:SetFontObject(NumberFontNormal)
-            slot.keybindText:SetPoint("BOTTOMRIGHT", slot.frame, "BOTTOMRIGHT", -2, 3)
-            slot.keybindText:SetTextColor(1, 1, 1, 1)
         end
+
+        -- Keybind label — all slots get one
+        slot.keybindText = slot.frame:CreateFontString(nil, "OVERLAY")
+        slot.keybindText:SetFontObject(NumberFontNormal)
+        slot.keybindText:SetPoint("BOTTOMRIGHT", slot.frame, "BOTTOMRIGHT", -2, 3)
+        slot.keybindText:SetTextColor(1, 1, 1, 1)
 
         slot.frame:Hide()
         slots[i] = slot
@@ -473,7 +473,7 @@ local function BuildSettingsPanel()
     AddCheckbox("Show keybind text",
         "Show the keybind for the suggested spell in the corner of the icon.",
         function() return db.showKeybind end,
-        function(v) db.showKeybind = v; if not v and slots[1] and slots[1].keybindText then slots[1].keybindText:Hide() end end)
+        function(v) db.showKeybind = v; if not v then for i = 1, MAX_SLOTS do if slots[i] and slots[i].keybindText then slots[i].keybindText:Hide() end end end end)
     AddCheckbox("Show out-of-range tint",
         "Pulse the icon red when the suggested spell cannot reach your target.",
         function() return db.showOutOfRange end,
@@ -1033,13 +1033,21 @@ Refresh = function()
                 slot.iconTexture:SetTexture(si.iconID)
                 slot.iconTexture:SetDesaturated(i > 1 and entry.onCooldown)
                 slot.frame:Show()
+                if db.showKeybind and slot.keybindText then
+                    slot.keybindText:SetText(GetSpellKeybind(entry.spellID))
+                    slot.keybindText:Show()
+                elseif slot.keybindText then
+                    slot.keybindText:Hide()
+                end
             else
                 slot.iconTexture:SetDesaturated(false)
                 slot.frame:Hide()
+                if slot.keybindText then slot.keybindText:Hide() end
             end
         else
             slot.iconTexture:SetDesaturated(false)
             slot.frame:Hide()
+            if slot.keybindText then slot.keybindText:Hide() end
         end
     end
 
@@ -1081,14 +1089,6 @@ Refresh = function()
         s1.rangeOverlay:SetShown(inRange == false)
     elseif s1.rangeOverlay then
         s1.rangeOverlay:Hide()
-    end
-
-    -- Keybind
-    if db.showKeybind and s1.keybindText then
-        s1.keybindText:SetText(GetSpellKeybind(sid))
-        s1.keybindText:Show()
-    elseif s1.keybindText then
-        s1.keybindText:Hide()
     end
 
     display:Show()
