@@ -1,0 +1,20 @@
+package-as: HekiLight
+
+ignore:
+  - .git
+  - .github
+  - .gitignore
+  - .pkgmeta
+  - .env
+  - .env.example
+  - .aiox-core
+  - .antigravity
+  - .claude
+  - .codex
+  - .cursor
+  - .gemini
+  - .vscode
+  - assets
+  - squads
+  - README.md
+  - CLAUDE.md

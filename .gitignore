@@ -2,8 +2,6 @@
 .release/
 *.zip
 
-# Packager metadata
-.pkgmeta
 
 # OS files
 .DS_Store
