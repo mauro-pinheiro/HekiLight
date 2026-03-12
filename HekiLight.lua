@@ -47,6 +47,28 @@ local DEFAULTS = {
     showWhenAttackableTarget  = true,
 }
 
+-- Spells auto-added to dbChar.ignoredSpells on first load for the matching
+-- class. These are maintenance casts (pet re-summons, revives) that RA may
+-- queue when a pet is absent but that clutter the rotation overlay.
+-- Applied once via dbChar.classDefaultsApplied flag; user can remove entries.
+local CLASS_DEFAULT_IGNORED = {
+    WARLOCK = {
+        [688]   = true,  -- Summon Imp
+        [697]   = true,  -- Summon Voidwalker
+        [691]   = true,  -- Summon Felhunter
+        [712]   = true,  -- Summon Sayaad
+        [30146] = true,  -- Summon Felguard
+    },
+    HUNTER = {
+        [883]   = true,  -- Call Pet 1
+        [83242] = true,  -- Call Pet 2
+        [83243] = true,  -- Call Pet 3
+        [83244] = true,  -- Call Pet 4
+        [83245] = true,  -- Call Pet 5
+        [982]   = true,  -- Revive Pet
+    },
+}
+
 -- ── State ────────────────────────────────────────────────────────────────────
 
 local db            -- points at HekiLightDB after ADDON_LOADED
@@ -73,6 +95,12 @@ local queueCache = {}
 for i = 1, MAX_SLOTS do queueCache[i] = { spellID = nil, realSlotID = nil, onCooldown = false } end
 local queueCount = 0  -- number of valid entries populated in the last GetSuggestionQueue call
 
+-- Last non-empty result from C_AssistedCombat.GetRotationSpells().
+-- Updated by GetSuggestionQueue whenever RA provides rotation data.
+-- Used as a fallback by the Ignored Spells dropdown so it is never empty
+-- after a reload even when the settings panel is opened before combat.
+local cachedRotSpells = {}
+
 -- ── Frames ───────────────────────────────────────────────────────────────────
 
 -- Root container frame: handles positioning, dragging, and show/hide.
@@ -90,6 +118,23 @@ local function InitDB()
     HekiLightDBChar = HekiLightDBChar or {}
     dbChar = HekiLightDBChar
     if dbChar.ignoredSpells == nil then dbChar.ignoredSpells = {} end
+    if dbChar.classDefaultsApplied == nil then dbChar.classDefaultsApplied = false end
+end
+
+local function ApplyClassDefaultIgnores(rotSpells)
+    if dbChar.classDefaultsApplied then return end
+    local _, classID = UnitClass("player")
+    local defaults = CLASS_DEFAULT_IGNORED[classID]
+    if not defaults then
+        dbChar.classDefaultsApplied = true
+        return
+    end
+    for _, sid in ipairs(rotSpells) do
+        if defaults[sid] then
+            dbChar.ignoredSpells[sid] = true
+        end
+    end
+    dbChar.classDefaultsApplied = true
 end
 
 local function ApplyPosition()
@@ -637,7 +682,6 @@ BuildIgnorePanel = function(parentCategory)
 
     local selectedIgnoreSpellID = nil
     local rowPool = {}
-    local rotSpellCache = {}   -- pre-built entries for the dropdown
     local PopulateRotationDropdown
     local RefreshIgnoreList
 
@@ -666,7 +710,6 @@ BuildIgnorePanel = function(parentCategory)
         print("|cff88ccffHekiLight:|r " .. name .. " [" .. selectedIgnoreSpellID .. "] will no longer appear in the secondary list.")
         selectedIgnoreSpellID = nil
         UIDropDownMenu_SetText(ignoreDD, "Select a rotation spell...")
-        PopulateRotationDropdown()
         RefreshIgnoreList()
     end)
 
@@ -674,15 +717,22 @@ BuildIgnorePanel = function(parentCategory)
     local listBaseY = controlY - 36
 
     PopulateRotationDropdown = function()
-        -- Phase A: build cache eagerly (runs on OnShow / after ignore changes)
-        wipe(rotSpellCache)
-        local ok, rotSpells = pcall(C_AssistedCombat.GetRotationSpells)
-        if ok and type(rotSpells) == "table" then
+        -- Register the dropdown callback. Data is fetched live each time the
+        -- dropdown opens so it is never stale after login/reload or when
+        -- Rotation Assistant becomes active mid-session.
+        UIDropDownMenu_Initialize(ignoreDD, function(self, level)
+            local entries = {}
+            local ok, rotSpells = pcall(C_AssistedCombat.GetRotationSpells)
+            -- Fall back to the last list seen by the poll loop so the dropdown
+            -- is never empty when the panel is opened before RA has been queried.
+            if not (ok and type(rotSpells) == "table" and #rotSpells > 0) then
+                rotSpells = cachedRotSpells
+            end
             for _, sid in ipairs(rotSpells) do
                 if IsPlayerSpell(sid) then
                     local si = C_Spell.GetSpellInfo(sid)
                     if si then
-                        rotSpellCache[#rotSpellCache + 1] = {
+                        entries[#entries + 1] = {
                             sid     = sid,
                             name    = si.name,
                             iconID  = si.iconID,
@@ -691,18 +741,15 @@ BuildIgnorePanel = function(parentCategory)
                     end
                 end
             end
-        end
 
-        -- Phase B: register cheap dropdown callback that reads from cache
-        UIDropDownMenu_Initialize(ignoreDD, function(self, level)
-            if #rotSpellCache == 0 then
+            if #entries == 0 then
                 local info    = UIDropDownMenu_CreateInfo()
                 info.text     = "|cff888888No rotation spells available|r"
                 info.disabled = true
                 UIDropDownMenu_AddButton(info, level)
                 return
             end
-            for _, entry in ipairs(rotSpellCache) do
+            for _, entry in ipairs(entries) do
                 local info    = UIDropDownMenu_CreateInfo()
                 info.text     = (entry.ignored and "|cff888888" or "")
                                 .. entry.name
@@ -758,7 +805,6 @@ BuildIgnorePanel = function(parentCategory)
                               .. "  |cff888888[" .. sid .. "]|r")
             row.removeBtn:SetScript("OnClick", function()
                 dbChar.ignoredSpells[capturedSid] = nil
-                PopulateRotationDropdown()
                 RefreshIgnoreList()
             end)
             row:SetPoint("TOPLEFT", 16, listBaseY - (rowIdx - 1) * 26)
@@ -778,9 +824,50 @@ BuildIgnorePanel = function(parentCategory)
         subPanel:SetHeight(math.abs(listBaseY) + math.max(rowIdx * 26, 20) + 56)
     end
 
+    -- Returns how many rotation spells are available (live or cached).
+    -- Also updates cachedRotSpells when live data is found, so a subsequent
+    -- dropdown click will have data even if it was empty on the first open.
+    local function CountRotationSpells()
+        local ok, rotSpells = pcall(C_AssistedCombat.GetRotationSpells)
+        if ok and type(rotSpells) == "table" and #rotSpells > 0 then
+            wipe(cachedRotSpells)
+            for i, sid in ipairs(rotSpells) do cachedRotSpells[i] = sid end
+        else
+            rotSpells = cachedRotSpells
+        end
+        local n = 0
+        for _, sid in ipairs(rotSpells) do
+            if IsPlayerSpell(sid) then n = n + 1 end
+        end
+        return n
+    end
+
+    -- Update the dropdown hint label to reflect current RA availability.
+    -- Called immediately on panel open and then every second by the ticker.
+    local function UpdateDropdownHint()
+        if selectedIgnoreSpellID then return end  -- don't overwrite an active selection
+        local n = CountRotationSpells()
+        if n > 0 then
+            UIDropDownMenu_SetText(ignoreDD, n .. " spell" .. (n == 1 and "" or "s") .. " available — click to select")
+        else
+            UIDropDownMenu_SetText(ignoreDD, "Select a rotation spell...")
+        end
+    end
+
     subPanel:SetScript("OnShow", function()
         PopulateRotationDropdown()
         RefreshIgnoreList()
+        UpdateDropdownHint()  -- immediate update; no waiting for the first tick
+        -- Continue polling once per second to catch RA becoming active mid-session.
+        if subPanel.availabilityTicker then subPanel.availabilityTicker:Cancel() end
+        subPanel.availabilityTicker = C_Timer.NewTicker(0.5, UpdateDropdownHint)
+    end)
+
+    subPanel:SetScript("OnHide", function()
+        if subPanel.availabilityTicker then
+            subPanel.availabilityTicker:Cancel()
+            subPanel.availabilityTicker = nil
+        end
     end)
 
     local ignoreCategory = Settings.RegisterCanvasLayoutSubcategory(parentCategory, subPanel, "Ignored Spells")
@@ -931,6 +1018,13 @@ local function GetSuggestionQueue(n)
     if n > 1 and C_AssistedCombat.GetRotationSpells then
         local ok, rotSpells = pcall(C_AssistedCombat.GetRotationSpells)
         if ok and rotSpells then
+            -- Keep a session-level copy so the Ignored Spells dropdown can
+            -- fall back to this if RA hasn't been queried yet when the panel opens.
+            if #rotSpells > 0 then
+                wipe(cachedRotSpells)
+                for i, sid in ipairs(rotSpells) do cachedRotSpells[i] = sid end
+                ApplyClassDefaultIgnores(rotSpells)
+            end
             -- Pass 1: off-cooldown spells fill slots first (high priority)
             for _, sid in ipairs(rotSpells) do
                 if queueCount >= n then break end
@@ -1208,6 +1302,21 @@ events:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
             if IsAssistActive() then StartPollLoop() end
         end
         Refresh()
+        -- RA may not have fully initialized yet at this point.
+        -- Retry after 1 s to pre-warm cachedRotSpells before the player
+        -- opens the Ignored Spells panel for the first time.
+        C_Timer.After(1, function()
+            if #cachedRotSpells == 0 then
+                local ok, spells = pcall(C_AssistedCombat.GetRotationSpells)
+                if ok and type(spells) == "table" and #spells > 0 then
+                    wipe(cachedRotSpells)
+                    for i, sid in ipairs(spells) do cachedRotSpells[i] = sid end
+                    ApplyClassDefaultIgnores(spells)
+                end
+            else
+                ApplyClassDefaultIgnores(cachedRotSpells)
+            end
+        end)
 
     elseif event == "PLAYER_REGEN_DISABLED" then
         inCombat = true
