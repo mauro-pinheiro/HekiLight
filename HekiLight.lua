@@ -158,6 +158,17 @@ local function RebuildSlotBindings()
         SLOT_BINDINGS[slot or i] = "ACTIONBUTTON" .. i
     end
 
+    -- Map all main bar pages (2–8) so spells on any page show their keybind.
+    -- Page N slot i uses the same ACTIONBUTTON{i} binding command as page 1.
+    for page = 2, 8 do
+        for i = 1, 12 do
+            local pageSlot = (page - 1) * 12 + i
+            if not SLOT_BINDINGS[pageSlot] then
+                SLOT_BINDINGS[pageSlot] = "ACTIONBUTTON" .. i
+            end
+        end
+    end
+
     -- Extra bars: MultiBar* frames have fixed (non-paged) slot IDs
     local multiBarDefs = {
         { frameBase = "MultiBarBottomLeft",  bindBase = "MULTIACTIONBAR1BUTTON" },
