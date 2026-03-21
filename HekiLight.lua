@@ -35,6 +35,10 @@ local DEFAULTS = {
     sounds         = false,  -- subtle sound when icon appears in combat
     minimapAngle   = 225,    -- degrees around minimap (0=right, 90=top, 180=left, 270=bottom)
     minimapShow    = true,
+    keybindFontSize = 10,   -- pt size for keybind label
+    keybindColorR   = 1.0,  -- red channel (0–1)
+    keybindColorG   = 1.0,  -- green channel (0–1)
+    keybindColorB   = 1.0,  -- blue channel (0–1); use /hkl kbcolor 1 0.82 0 for WoW yellow
     -- Hard stops (always hide regardless of combat state)
     hideWhenDead      = true,
     hideWhenCinematic = true,
@@ -246,6 +250,16 @@ local function ApplySlotLayout()
     end
 end
 
+local function ApplyKeybindStyle()
+    for i = 1, MAX_SLOTS do
+        local s = slots[i]
+        if s and s.keybindText then
+            s.keybindText:SetFont("Fonts\\ARIALN.TTF", db.keybindFontSize, "OUTLINE")
+            s.keybindText:SetTextColor(db.keybindColorR, db.keybindColorG, db.keybindColorB, 1)
+        end
+    end
+end
+
 local function BuildSlots()
     display:SetScale(db.scale)
     display:SetFrameStrata("HIGH")
@@ -323,17 +337,16 @@ local function BuildSlots()
             slot.rangeOverlay = rangeOvl
         end
 
-        -- Keybind label — all slots get one
+        -- Keybind label — all slots get one; style applied below via ApplyKeybindStyle()
         slot.keybindText = slot.frame:CreateFontString(nil, "OVERLAY")
-        slot.keybindText:SetFontObject(NumberFontNormal)
         slot.keybindText:SetPoint("BOTTOMRIGHT", slot.frame, "BOTTOMRIGHT", -2, 3)
-        slot.keybindText:SetTextColor(1, 1, 1, 1)
 
         slot.frame:Hide()
         slots[i] = slot
     end
 
     ApplySlotLayout()
+    ApplyKeybindStyle()
     display:Hide()
     Log("BuildSlots complete, maxSlots=", MAX_SLOTS, "showing=", db.numSuggestions)
 end
@@ -570,6 +583,24 @@ local function BuildSettingsPanel()
         function() return db.sounds end,
         function(v) db.sounds = v end)
 
+    SectionHeader("Keybind Text")
+    AddSlider("Keybind Font Size", 8, 24, 1,
+        function() return db.keybindFontSize end,
+        function(v) db.keybindFontSize = v; ApplyKeybindStyle(); Refresh() end,
+        "left", "Font size for the keybind label on each icon slot (8–24 pt).")
+    AddSlider("Keybind Red", 0, 1, 0.05,
+        function() return db.keybindColorR end,
+        function(v) db.keybindColorR = v; ApplyKeybindStyle(); Refresh() end,
+        "left", "Red channel of the keybind label color (0–1). Default yellow = R:1 G:0.82 B:0.")
+    AddSlider("Keybind Green", 0, 1, 0.05,
+        function() return db.keybindColorG end,
+        function(v) db.keybindColorG = v; ApplyKeybindStyle(); Refresh() end,
+        "left", "Green channel of the keybind label color (0–1).")
+    AddSlider("Keybind Blue", 0, 1, 0.05,
+        function() return db.keybindColorB end,
+        function(v) db.keybindColorB = v; ApplyKeybindStyle(); Refresh() end,
+        "left", "Blue channel of the keybind label color (0–1).")
+
     SectionHeader("Minimap")
     AddCheckbox("Show minimap button",
         "Show the HekiLight button on the minimap. Drag it to reposition.",
@@ -629,6 +660,7 @@ local function BuildSettingsPanel()
         ApplyPosition()
         display:SetScale(db.scale)
         ApplySlotLayout()
+        ApplyKeybindStyle()
         Refresh()
         for _, ref in ipairs(checkboxRefs) do ref.cb:SetChecked(ref.getValue()) end
         panelUpdating = true
@@ -1444,6 +1476,8 @@ local function PrintHelp()
     print("  /hkl range on|off          toggle out-of-range tint")
     print("  /hkl procglow on|off       toggle proc glow border pulse")
     print("  /hkl sounds on|off         toggle combat sounds")
+    print("  /hkl kbsize <8–24>         set keybind text font size")
+    print("  /hkl kbcolor <r> <g> <b>   set keybind text color (0–1 each; e.g. 1 0.82 0 = yellow)")
     print("  /hkl minimap on|off        toggle minimap button")
     print("  /hkl hide dead on|off      toggle always-hide when dead")
     print("  /hkl hide cinematic on|off toggle always-hide during cinematics")
@@ -1481,6 +1515,7 @@ SlashCmdList["HEKILIGHT"] = function(msg)
         ApplyPosition()
         display:SetScale(db.scale)
         ApplySlotLayout()
+        ApplyKeybindStyle()
         Refresh()
         print("|cff88ccffHekiLight:|r All settings reset to defaults.")
 
@@ -1573,6 +1608,29 @@ SlashCmdList["HEKILIGHT"] = function(msg)
     elseif msg == "sounds off" then
         db.sounds = false
         print("|cff88ccffHekiLight:|r Sounds disabled.")
+
+    elseif msg:find("^kbsize%s") then
+        local v = tonumber(msg:match("^kbsize%s+(.+)$"))
+        if v and v >= 8 and v <= 24 then
+            db.keybindFontSize = v
+            ApplyKeybindStyle(); Refresh()
+            print("|cff88ccffHekiLight:|r Keybind font size → " .. v)
+        else
+            print("|cff88ccffHekiLight:|r kbsize must be between 8 and 24.")
+        end
+
+    elseif msg:find("^kbcolor%s") then
+        local r, g, b = msg:match("^kbcolor%s+([%d%.]+)%s+([%d%.]+)%s+([%d%.]+)$")
+        r, g, b = tonumber(r), tonumber(g), tonumber(b)
+        if r and g and b then
+            db.keybindColorR = math.max(0, math.min(1, r))
+            db.keybindColorG = math.max(0, math.min(1, g))
+            db.keybindColorB = math.max(0, math.min(1, b))
+            ApplyKeybindStyle(); Refresh()
+            print("|cff88ccffHekiLight:|r Keybind color set.")
+        else
+            print("|cff88ccffHekiLight:|r Usage: /hkl kbcolor <r> <g> <b>  (values 0–1, e.g. 1 0.82 0 for yellow)")
+        end
 
     elseif msg == "minimap on" then
         db.minimapShow = true
