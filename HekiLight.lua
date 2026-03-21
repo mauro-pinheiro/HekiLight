@@ -39,16 +39,6 @@ local DEFAULTS = {
     keybindColorR   = 1.0,  -- red channel (0–1)
     keybindColorG   = 1.0,  -- green channel (0–1)
     keybindColorB   = 1.0,  -- blue channel (0–1); use /hkl kbcolor 1 0.82 0 for WoW yellow
-    -- Hard stops (always hide regardless of combat state)
-    hideWhenDead      = true,
-    hideWhenCinematic = true,
-    hideWhenMounted   = false,
-    hideWhenResting   = false,
-    hideWhenVehicle   = true,
-    hideWhenNoTarget  = false,
-    -- Show conditions (positive logic — show when any of these are true)
-    showWhenInCombat          = true,
-    showWhenAttackableTarget  = true,
 }
 
 -- Spells auto-added to dbChar.ignoredSpells on first load for the matching
@@ -78,7 +68,6 @@ local CLASS_DEFAULT_IGNORED = {
 local db            -- points at HekiLightDB after ADDON_LOADED
 local dbChar        -- points at HekiLightDBChar after ADDON_LOADED (per-character)
 local inCombat    = false
-local inCinematic = false  -- true while a cut-scene or pre-rendered movie is playing
 local elapsed     = 0
 -- Spells with a real cooldown (base CD > 1.5 s) that the player has cast.
 -- Used to grey secondary icons while the spell is on its real CD.
@@ -233,7 +222,7 @@ end
 
 -- ── UI Construction ───────────────────────────────────────────────────────────
 
-local Refresh  -- forward declaration; defined later after ShouldShow
+local Refresh  -- forward declaration
 
 -- Resize the container and reposition every slot sub-frame.
 -- Call whenever iconSize, iconSpacing, or numSuggestions changes.
@@ -448,9 +437,10 @@ local function BuildSettingsPanel()
 
     local checkboxRefs  = {}
     local sliderRefs    = {}
+    local swatchRefs    = {}
     local panelUpdating = false
 
-    -- Two-column layout: left = Appearance/Display/Minimap, right = Hide conditions
+    -- Two-column layout: left = Appearance/Display, right = Keybind Text/Minimap
     local cols = {
         left  = { x = 16,  y = -70 },
         right = { x = 320, y = -70 },
@@ -523,6 +513,58 @@ local function BuildSettingsPanel()
         return slider
     end
 
+    local function AddColorSwatch(label, colName, tip)
+        local col = cols[colName or "left"]
+
+        local labelStr = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        labelStr:SetPoint("TOPLEFT", col.x + 4, col.y)
+        labelStr:SetText(label)
+
+        local swatch = CreateFrame("Button", nil, panel, "BackdropTemplate")
+        swatch:SetSize(80, 20)
+        swatch:SetPoint("TOPLEFT", col.x + 4, col.y - 20)
+        swatch:SetBackdrop({
+            bgFile   = "Interface\\Buttons\\WHITE8X8",
+            edgeFile = "Interface\\Buttons\\WHITE8X8",
+            edgeSize = 1,
+        })
+        swatch:SetBackdropColor(db.keybindColorR, db.keybindColorG, db.keybindColorB, 1)
+        swatch:SetBackdropBorderColor(0.3, 0.3, 0.3, 1)
+
+        swatch:SetScript("OnClick", function()
+            ColorPickerFrame:SetupColorPickerAndShow({
+                swatchFunc = function()
+                    local r, g, b = ColorPickerFrame:GetColorRGB()
+                    db.keybindColorR, db.keybindColorG, db.keybindColorB = r, g, b
+                    swatch:SetBackdropColor(r, g, b, 1)
+                    ApplyKeybindStyle()
+                end,
+                cancelFunc = function(prev)
+                    db.keybindColorR, db.keybindColorG, db.keybindColorB = prev.r, prev.g, prev.b
+                    swatch:SetBackdropColor(prev.r, prev.g, prev.b, 1)
+                    ApplyKeybindStyle()
+                end,
+                hasOpacity = false,
+                r = db.keybindColorR,
+                g = db.keybindColorG,
+                b = db.keybindColorB,
+            })
+        end)
+
+        if tip then
+            swatch:SetScript("OnEnter", function(self)
+                GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                GameTooltip:AddLine(label)
+                GameTooltip:AddLine(tip, 1, 1, 1, true)
+                GameTooltip:Show()
+            end)
+            swatch:SetScript("OnLeave", function() GameTooltip:Hide() end)
+        end
+
+        table.insert(swatchRefs, { swatch = swatch })
+        col.y = col.y - 52
+    end
+
     local function SectionHeader(text, colName)
         local col = cols[colName or "left"]
         local s = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
@@ -531,7 +573,7 @@ local function BuildSettingsPanel()
         col.y = col.y - 22
     end
 
-    -- ── Left Column: Appearance / Display Options / Minimap ───────────────────
+    -- ── Left Column: Appearance / Display Options ─────────────────────────────
     SectionHeader("Appearance")
     AddCheckbox("Lock position",
         "Prevent the icon from being accidentally dragged. Use /hkl unlock or untick this to reposition it.",
@@ -583,69 +625,23 @@ local function BuildSettingsPanel()
         function() return db.sounds end,
         function(v) db.sounds = v end)
 
-    SectionHeader("Keybind Text")
+    -- ── Right Column: Keybind Text / Minimap ──────────────────────────────────
+    SectionHeader("Keybind Text", "right")
     AddSlider("Keybind Font Size", 8, 24, 1,
         function() return db.keybindFontSize end,
         function(v) db.keybindFontSize = v; ApplyKeybindStyle(); Refresh() end,
-        "left", "Font size for the keybind label on each icon slot (8–24 pt).")
-    AddSlider("Keybind Red", 0, 1, 0.05,
-        function() return db.keybindColorR end,
-        function(v) db.keybindColorR = v; ApplyKeybindStyle(); Refresh() end,
-        "left", "Red channel of the keybind label color (0–1). Default yellow = R:1 G:0.82 B:0.")
-    AddSlider("Keybind Green", 0, 1, 0.05,
-        function() return db.keybindColorG end,
-        function(v) db.keybindColorG = v; ApplyKeybindStyle(); Refresh() end,
-        "left", "Green channel of the keybind label color (0–1).")
-    AddSlider("Keybind Blue", 0, 1, 0.05,
-        function() return db.keybindColorB end,
-        function(v) db.keybindColorB = v; ApplyKeybindStyle(); Refresh() end,
-        "left", "Blue channel of the keybind label color (0–1).")
+        "right", "Font size for the keybind label on each icon slot (8–24 pt).")
+    AddColorSwatch("Keybind Color", "right",
+        "Click to open the color picker. Sets the color of the keybind label on each icon slot.")
 
-    SectionHeader("Minimap")
+    SectionHeader("Minimap", "right")
     AddCheckbox("Show minimap button",
         "Show the HekiLight button on the minimap. Drag it to reposition.",
         function() return db.minimapShow ~= false end,
         function(v)
             db.minimapShow = v
             if minimapBtn then minimapBtn:SetShown(v) end
-        end)
-
-    -- ── Right Column: Visibility Conditions ──────────────────────────────────
-    SectionHeader("Always Hide When...", "right")
-    AddCheckbox("Player is dead or a ghost",
-        "Hide the icon while you are dead or in spirit form.",
-        function() return db.hideWhenDead ~= false end,
-        function(v) db.hideWhenDead = v; Refresh() end, "right")
-    AddCheckbox("A cinematic is playing",
-        "Hide the icon during cut-scenes and pre-rendered movies.",
-        function() return db.hideWhenCinematic ~= false end,
-        function(v) db.hideWhenCinematic = v; Refresh() end, "right")
-    AddCheckbox("Player is mounted",
-        "Hide the icon while you are mounted.",
-        function() return db.hideWhenMounted ~= false end,
-        function(v) db.hideWhenMounted = v; Refresh() end, "right")
-    AddCheckbox("Player is resting",
-        "Hide the icon while in a resting area (inn or city).",
-        function() return db.hideWhenResting ~= false end,
-        function(v) db.hideWhenResting = v; Refresh() end, "right")
-    AddCheckbox("Player is in a vehicle",
-        "Hide the icon while controlling a vehicle.",
-        function() return db.hideWhenVehicle ~= false end,
-        function(v) db.hideWhenVehicle = v; Refresh() end, "right")
-    AddCheckbox("No target selected",
-        "Hide the icon when you have no target.",
-        function() return db.hideWhenNoTarget ~= false end,
-        function(v) db.hideWhenNoTarget = v; Refresh() end, "right")
-
-    SectionHeader("Show Icon When...", "right")
-    AddCheckbox("Player is in combat",
-        "Show the icon whenever you enter combat, regardless of your target.",
-        function() return db.showWhenInCombat ~= false end,
-        function(v) db.showWhenInCombat = v; Refresh() end, "right")
-    AddCheckbox("Target is attackable",
-        "Show the icon when you have a target you can attack (even outside of combat).",
-        function() return db.showWhenAttackableTarget ~= false end,
-        function(v) db.showWhenAttackableTarget = v; Refresh() end, "right")
+        end, "right")
 
     -- ── Footer ───────────────────────────────────────────────────────────────
     local footerY = math.min(cols.left.y, cols.right.y) - 16
@@ -670,6 +666,9 @@ local function BuildSettingsPanel()
             ref.labelStr:SetText(ref.label .. ": " .. v)
         end
         panelUpdating = false
+        for _, ref in ipairs(swatchRefs) do
+            ref.swatch:SetBackdropColor(db.keybindColorR, db.keybindColorG, db.keybindColorB, 1)
+        end
         print("|cff88ccffHekiLight:|r All settings reset to defaults.")
     end)
     footerY = footerY - 32
@@ -690,6 +689,9 @@ local function BuildSettingsPanel()
             ref.labelStr:SetText(ref.label .. ": " .. v)
         end
         panelUpdating = false
+        for _, ref in ipairs(swatchRefs) do
+            ref.swatch:SetBackdropColor(db.keybindColorR, db.keybindColorG, db.keybindColorB, 1)
+        end
     end)
 
     settingsCategory = Settings.RegisterCanvasLayoutCategory(panel, "HekiLight")
@@ -1140,53 +1142,9 @@ local function UpdateGlowState(spellID)
     end
 end
 
---- Returns true when the icon should be shown, false (+ reason) when it should not.
---- Logic: hard stops always suppress; then show if ANY positive condition is met.
-local function ShouldShow()
-    -- Hard stops — always hide regardless of combat state.
-    if db.hideWhenDead and UnitIsDeadOrGhost("player") then
-        return false, "dead"
-    end
-    if db.hideWhenCinematic and inCinematic then
-        return false, "cinematic"
-    end
-    if db.hideWhenMounted and IsMounted() then
-        return false, "mounted"
-    end
-    if db.hideWhenResting and IsResting() then
-        return false, "resting"
-    end
-    if db.hideWhenVehicle and (UnitInVehicle("player") or UnitHasVehicleUI("player")
-            or HasVehicleActionBar() or HasOverrideActionBar()) then
-        return false, "vehicle"
-    end
-    if db.hideWhenNoTarget and not UnitExists("target") then
-        return false, "no target"
-    end
-
-    -- Positive show conditions — show if any enabled condition is met.
-    if db.showWhenInCombat and inCombat then
-        return true
-    end
-    if db.showWhenAttackableTarget and UnitCanAttack("player", "target") then
-        return true
-    end
-
-    return false, "no show condition met"
-end
 
 Refresh = function()
     if #slots == 0 then return end  -- BuildSlots not yet called
-
-    -- Check suppression first, before any API work.
-    local showOk, reason = ShouldShow()
-    if not showOk then
-        currentSuggestionID = nil
-        StopGlowPulse()
-        display:Hide()
-        Log("display suppressed — reason:", reason)
-        return
-    end
 
     local queue   = GetSuggestionQueue(db.numSuggestions)
     local primary = queue[1]
@@ -1318,17 +1276,6 @@ events:RegisterEvent("PLAYER_REGEN_ENABLED")    -- combat end
 events:RegisterEvent("UPDATE_BINDINGS")
 events:RegisterEvent("ACTIONBAR_SLOT_CHANGED")
 events:RegisterEvent("ACTIONBAR_UPDATE_STATE")  -- fires when Rotation Assistant changes highlight
-events:RegisterEvent("UNIT_FLAGS")              -- catches death / vehicle state changes
-events:RegisterEvent("UNIT_ENTERED_VEHICLE")    -- immediate hide on vehicle entry
-events:RegisterEvent("UNIT_EXITED_VEHICLE")     -- immediate refresh on vehicle exit
-events:RegisterEvent("UNIT_HEALTH")             -- instant hide on death (no poll lag)
-events:RegisterEvent("CINEMATIC_START")         -- in-engine cut-scene begins
-events:RegisterEvent("CINEMATIC_STOP")          -- in-engine cut-scene ends
-events:RegisterEvent("PLAY_MOVIE")              -- pre-rendered movie begins
-events:RegisterEvent("STOP_MOVIE")              -- pre-rendered movie ends
-events:RegisterEvent("PLAYER_MOUNT_DISPLAY_CHANGED")  -- mount / dismount
-events:RegisterEvent("PLAYER_TARGET_CHANGED")         -- target swapped or cleared
-events:RegisterEvent("ZONE_CHANGED_NEW_AREA")         -- entering/leaving resting areas (city/inn)
 events:RegisterEvent("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW")  -- proc glow appears
 events:RegisterEvent("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE")  -- proc glow fades
 events:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED")             -- track real-CD casts for grey filter
@@ -1342,11 +1289,10 @@ events:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
 
     elseif event == "PLAYER_ENTERING_WORLD" then
         RebuildSlotBindings()
-        -- Handle logging in while already in combat
         if UnitAffectingCombat("player") then
             inCombat = true
-            if IsAssistActive() then StartPollLoop() end
         end
+        if IsAssistActive() then StartPollLoop() end
         Refresh()
         -- RA may not have fully initialized yet at this point.
         -- Retry after 1 s to pre-warm cachedRotSpells before the player
@@ -1373,40 +1319,8 @@ events:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
 
     elseif event == "PLAYER_REGEN_ENABLED" then
         inCombat = false
-        StopPollLoop()
         Refresh()
         Log("Left combat")
-
-    elseif event == "CINEMATIC_START" or event == "PLAY_MOVIE" then
-        inCinematic = true
-        display:Hide()
-        Log("Cinematic started — display hidden")
-
-    elseif event == "CINEMATIC_STOP" or event == "STOP_MOVIE" then
-        inCinematic = false
-        Refresh()
-        Log("Cinematic ended — refreshed")
-
-    elseif event == "UNIT_FLAGS" or event == "UNIT_HEALTH" then
-        -- Only care about the player unit; re-run Refresh so ShouldShow() acts immediately
-        if arg1 == "player" then Refresh() end
-
-    elseif event == "UNIT_ENTERED_VEHICLE" then
-        if arg1 == "player" then
-            display:Hide()
-            Log("Vehicle entered — display hidden")
-        end
-
-    elseif event == "UNIT_EXITED_VEHICLE" then
-        if arg1 == "player" then
-            Refresh()
-            Log("Vehicle exited — refreshed")
-        end
-
-    elseif event == "PLAYER_MOUNT_DISPLAY_CHANGED" or
-           event == "PLAYER_TARGET_CHANGED"        or
-           event == "ZONE_CHANGED_NEW_AREA" then
-        Refresh()
 
     elseif event == "ACTIONBAR_UPDATE_STATE" then
         -- State changes (button highlights) don't affect slot assignments; just re-render.
@@ -1449,19 +1363,6 @@ end)
 -- ── Slash Commands ────────────────────────────────────────────────────────────
 
 -- Data-driven condition maps for slash commands.
-local ALWAYS_HIDE_FLAGS = {
-    dead      = { key = "hideWhenDead",      label = "Always hide when dead" },
-    cinematic = { key = "hideWhenCinematic", label = "Always hide during cinematic" },
-    mounted   = { key = "hideWhenMounted",   label = "Always hide when mounted" },
-    resting   = { key = "hideWhenResting",   label = "Always hide when resting" },
-    vehicle   = { key = "hideWhenVehicle",   label = "Always hide when in a vehicle" },
-    notarget  = { key = "hideWhenNoTarget",  label = "Always hide when no target" },
-}
-local SHOW_FLAGS = {
-    combat = { key = "showWhenInCombat",         label = "Show when in combat" },
-    target = { key = "showWhenAttackableTarget", label = "Show when target is attackable" },
-}
-
 local function PrintHelp()
     print("|cff88ccffHekiLight|r commands:")
     print("  /hkl lock                  lock display position")
@@ -1479,14 +1380,6 @@ local function PrintHelp()
     print("  /hkl kbsize <8–24>         set keybind text font size")
     print("  /hkl kbcolor <r> <g> <b>   set keybind text color (0–1 each; e.g. 1 0.82 0 = yellow)")
     print("  /hkl minimap on|off        toggle minimap button")
-    print("  /hkl hide dead on|off      toggle always-hide when dead")
-    print("  /hkl hide cinematic on|off toggle always-hide during cinematics")
-    print("  /hkl hide mounted on|off   toggle always-hide when mounted")
-    print("  /hkl hide resting on|off   toggle always-hide when resting")
-    print("  /hkl hide vehicle on|off   toggle always-hide when in a vehicle")
-    print("  /hkl hide notarget on|off  toggle always-hide when no target")
-    print("  /hkl show combat on|off    toggle show when in combat")
-    print("  /hkl show target on|off    toggle show when target is attackable")
     print("  /hkl ignore <spellID>      hide a spell from the secondary list")
     print("  /hkl unignore <spellID>    re-show a spell in the secondary list")
     print("  /hkl ignorelist            list ignored spells")
@@ -1641,29 +1534,6 @@ SlashCmdList["HEKILIGHT"] = function(msg)
         db.minimapShow = false
         if minimapBtn then minimapBtn:Hide() end
         print("|cff88ccffHekiLight:|r Minimap button hidden.")
-
-    -- Hide/show condition toggles — data-driven via ALWAYS_HIDE_FLAGS / SHOW_FLAGS.
-    elseif msg:find("^hide%s") then
-        local flag, state = msg:match("^hide%s+(%a+)%s+(on|off)$")
-        local def = flag and ALWAYS_HIDE_FLAGS[flag]
-        if def then
-            db[def.key] = (state == "on")
-            Refresh()
-            print("|cff88ccffHekiLight:|r " .. def.label .. ": " .. state:upper())
-        else
-            print("|cff88ccffHekiLight:|r Unknown flag. Valid: dead, cinematic, mounted, resting, vehicle, notarget")
-        end
-
-    elseif msg:find("^show%s") then
-        local flag, state = msg:match("^show%s+(%a+)%s+(on|off)$")
-        local def = flag and SHOW_FLAGS[flag]
-        if def then
-            db[def.key] = (state == "on")
-            Refresh()
-            print("|cff88ccffHekiLight:|r " .. def.label .. ": " .. state:upper())
-        else
-            print("|cff88ccffHekiLight:|r Unknown flag. Valid: combat, target")
-        end
 
     elseif msg:find("^ignore%s") then
         local arg = strtrim(msg:match("^ignore%s+(.+)$") or "")
