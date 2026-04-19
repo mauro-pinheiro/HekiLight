@@ -11,4 +11,5 @@
 ## X-Curse-Project-ID: 1482868
 ## X-Wago-ID:
 
+Locale.lua
 HekiLight.lua
