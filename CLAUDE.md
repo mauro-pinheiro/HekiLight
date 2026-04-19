@@ -117,7 +117,31 @@ Two levels:
 - `Log(...)` — debug-only (`DEBUG = true` via `/hkl debug`); prints to chat immediately
 - `DLog(tag, msg)` — always active; writes timestamped entries to `HekiLightDB.sessionLog`; read with `/hkl log [N]`
 
-`DLog` tags in use: `SUGGEST`, `SLOT`, `RAW_SUGG`, `SUPPRESS`, `ALERT_SHOW`, `ALERT_HIDE`, `ALERT_GLOW`
+`DLog` tags in use: `SUGGEST`, `SLOT`, `RAW_SUGG`, `SUPPRESS`, `ALERT_SHOW`, `ALERT_HIDE`, `ALERT_GLOW`, `OVERRIDE`
+
+`OVERRIDE` fires every time a talent-override substitution occurs (e.g., base Death and Decay → Defile). Change-detection guards (`lastLogSuggID`, `lastSlotSpellID`, `lastSkippedAlertID`) prevent high-frequency events from flooding the 500-entry buffer.
+
+## Project documentation
+
+`docs/` contains the product artifacts for this addon:
+
+```
+docs/prd/PRD.md          — full product requirements (FRs, NFRs, constraints, roadmap)
+docs/epics/EPIC-{1-4}.md — per-epic goals, stories, ADRs, and acceptance criteria
+docs/stories/{n}.{m}.story.md — individual story files with AC and implementation notes
+```
+
+All epics (1–4) are **Done**. EPIC-5 (Correctness Hardening) is **Planned** — see open bugs below.
+
+## Known open bugs (targets for EPIC-5)
+
+| Bug | Location | Priority |
+|-----|----------|----------|
+| Secondary slot deduplication broken by override | `GetSuggestionQueue` — `primaryID` is override ID; `GetRotationSpells()` returns base IDs; `sid ~= primaryID` misses match | High |
+| `IsActionInRange` not pcall-guarded | `Refresh` — `C_ActionBar.IsActionInRange(rslot)` at ~line 1743 lacks pcall; could taint on unexpected slot type | Medium |
+| `GetRealSlot` not called for secondary spells | `GetSuggestionQueue` — secondary spells from `GetRotationSpells()` are base IDs; `FindSpellActionButtons(baseID)` may fail if slot indexed under override ID | Medium |
+
+Do **not** add `C_CooldownViewer` calls — permanently off-limits, causes combat taint (ADR-6).
 
 ## WoW API surface
 
