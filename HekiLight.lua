@@ -188,7 +188,13 @@ local SLOT_BINDINGS  = {}
 -- spellID → last successful keybind string; survives the transient window at
 -- the start of combat / target selection when FindSpellActionButtons may not
 -- yet return the regular (non-RA) slot.
-local keybindCache   = {}
+local keybindCache         = {}
+-- C_Timer.NewTimer handle for the post-shapeshift deferred Refresh(); cancelled
+-- if combat starts before it fires (poll loop takes over that path).
+local keybindRefreshTimer  = nil
+-- spellID → last "key:source" string logged; prevents KEYBIND from flooding the
+-- ring buffer at the poll rate (20×/s) when the result doesn't change.
+local lastKeybindLog       = {}
 
 -- Called at PLAYER_LOGIN (frames are fully initialised by then).
 -- Queries each Blizzard action button frame for its current action slot so
@@ -264,6 +270,11 @@ local function GetSpellKeybind(spellID)
                 if key ~= "" then
                     keybindCache[spellID] = key  -- remember for transient-miss recovery
                     Log("GetSpellKeybind:", spellID, "→", key, "(slot", slot, ")")
+                    local logEntry = key .. ":slot"
+                    if lastKeybindLog[spellID] ~= logEntry then
+                        lastKeybindLog[spellID] = logEntry
+                        DLog("KEYBIND", string.format("spellID=%d key=%s source=slot", spellID, key))
+                    end
                     return key
                 end
             end
@@ -273,7 +284,20 @@ local function GetSpellKeybind(spellID)
     -- start of combat / target selection.  Return the last known good value so
     -- the keybind text is visible immediately instead of after ACTIONBAR_SLOT_CHANGED.
     local cached = keybindCache[spellID]
-    Log("GetSpellKeybind:", spellID, "→", cached and ("cache:" .. cached) or "no keybind found")
+    if cached then
+        Log("GetSpellKeybind:", spellID, "→", "cache:" .. cached)
+        local logEntry = cached .. ":cache"
+        if lastKeybindLog[spellID] ~= logEntry then
+            lastKeybindLog[spellID] = logEntry
+            DLog("KEYBIND", string.format("spellID=%d key=%s source=cache", spellID, cached))
+        end
+    else
+        Log("GetSpellKeybind:", spellID, "→ no keybind found")
+        if lastKeybindLog[spellID] ~= ":miss" then
+            lastKeybindLog[spellID] = ":miss"
+            DLog("KEYBIND", string.format("spellID=%d source=miss", spellID))
+        end
+    end
     return cached or ""
 end
 
@@ -1715,8 +1739,25 @@ Refresh = function()
                 slot.iconTexture:SetDesaturated(i > 1 and entry.onCooldown)
                 slot.frame:Show()
                 if db.showKeybind and slot.keybindText then
-                    local kb = entry.realSlotID and GetSlotKeybind(entry.realSlotID)
-                               or GetSpellKeybind(entry.overrideSpellID or entry.spellID)
+                    -- Two-stage lookup: prefer realSlotID direct binding, fall back to
+                    -- GetSpellKeybind (which has keybindCache). The naive `realSlotID and
+                    -- GetSlotKeybind(...) or GetSpellKeybind(...)` form silently skips the
+                    -- fallback when GetSlotKeybind returns "" because "" is truthy in Lua.
+                    local kb = ""
+                    if entry.realSlotID then
+                        kb = GetSlotKeybind(entry.realSlotID)
+                        if kb ~= "" then
+                            keybindCache[entry.spellID] = kb  -- keep cache warm for post-shapeshift transient
+                            local logEntry = kb .. ":realslot"
+                            if lastKeybindLog[entry.spellID] ~= logEntry then
+                                lastKeybindLog[entry.spellID] = logEntry
+                                DLog("KEYBIND", string.format("spellID=%d key=%s source=realslot slot=%d", entry.spellID, kb, entry.realSlotID))
+                            end
+                        end
+                    end
+                    if kb == "" then
+                        kb = GetSpellKeybind(entry.overrideSpellID or entry.spellID)
+                    end
                     slot.keybindText:SetText(kb)
                     slot.keybindText:Show()
                 elseif slot.keybindText then
@@ -1965,8 +2006,9 @@ events:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
 
     elseif event == "PLAYER_REGEN_DISABLED" then
         inCombat = true
+        if keybindRefreshTimer then keybindRefreshTimer:Cancel(); keybindRefreshTimer = nil end
         RebuildSlotBindings()  -- ensure SLOT_BINDINGS is current before first poll
-        wipe(keybindCache)     -- clear stale cache; fresh fight, fresh lookup
+        wipe(keybindCache); wipe(lastKeybindLog)  -- clear stale cache; fresh fight, fresh lookup
         -- Poll only when rotation assistance is active (Rotation Assistant button or Assisted Highlight).
         -- ACTIONBAR_SLOT_CHANGED will start the loop if the feature is enabled mid-combat.
         if IsAssistActive() then StartPollLoop() end
@@ -1988,10 +2030,20 @@ events:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
            event == "UPDATE_BINDINGS" then
         -- Slot content or keybinding actually changed — rebuild the map then re-render.
         RebuildSlotBindings()
-        wipe(keybindCache)  -- force fresh lookup; stale cache could show old bindings
+        wipe(lastKeybindLog)  -- reset DLog change-detect; keep keybindCache as transient-miss fallback
         Refresh()
         -- If assist feature was just enabled mid-combat, start polling now.
         if inCombat and IsAssistActive() then StartPollLoop() end
+        -- Out of combat, FindSpellActionButtons has a transient nil window immediately
+        -- after a slot change (e.g., shapeshifting out of Travel Form). The Refresh()
+        -- above likely misses it. Schedule a deferred repopulation after the window closes.
+        if not inCombat then
+            if keybindRefreshTimer then keybindRefreshTimer:Cancel() end
+            keybindRefreshTimer = C_Timer.NewTimer(0.3, function()
+                keybindRefreshTimer = nil
+                if not inCombat then Refresh() end
+            end)
+        end
 
     elseif event == "SPELL_ACTIVATION_OVERLAY_GLOW_SHOW" then
         -- Track all active proc overlays; update proc-alert icon and border pulse
