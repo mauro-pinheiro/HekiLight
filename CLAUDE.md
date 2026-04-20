@@ -117,7 +117,7 @@ Two levels:
 - `Log(...)` — debug-only (`DEBUG = true` via `/hkl debug`); prints to chat immediately
 - `DLog(tag, msg)` — always active; writes timestamped entries to `HekiLightDB.sessionLog`; read with `/hkl log [N]`
 
-`DLog` tags in use: `SUGGEST`, `SLOT`, `RAW_SUGG`, `SUPPRESS`, `ALERT_SHOW`, `ALERT_HIDE`, `ALERT_GLOW`, `OVERRIDE`
+`DLog` tags in use: `SUGGEST`, `SLOT`, `RAW_SUGG`, `SUPPRESS`, `ALERT_SHOW`, `ALERT_HIDE`, `ALERT_GLOW`, `OVERRIDE`, `KEYBIND`
 
 `OVERRIDE` fires every time a talent-override substitution occurs (e.g., base Death and Decay → Defile). Change-detection guards (`lastLogSuggID`, `lastSlotSpellID`, `lastSkippedAlertID`) prevent high-frequency events from flooding the 500-entry buffer.
 
