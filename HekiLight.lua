@@ -1283,6 +1283,10 @@ local function IsAssistActive()
         or GetCVarBool("assistedCombatHighlight")
 end
 
+-- Forward declaration: GetRealSlot is defined after GetActiveSuggestion in this
+-- section but is needed by the out-of-combat fallback inside GetActiveSuggestion.
+local GetRealSlot
+
 -- Returns the suggested spellID from the rotation engine, plus the first
 -- regular action bar slot that contains it for range/keybind checks.
 --
@@ -1344,8 +1348,25 @@ local function GetActiveSuggestion()
     end
 
     if not spellID then
-        Log("No active suggestion found")
-        return nil, nil
+        -- Out-of-combat fallback for secondary-form spells (e.g. Cat Form for Resto Druid).
+        -- GetNextCastSpell returns nil for these before combat starts. Find the first usable
+        -- rotation spell so suggestions appear on target acquisition without entering combat.
+        if not inCombat and UnitCanAttack("player", "target") and C_AssistedCombat.GetRotationSpells then
+            local okF, rotF = pcall(C_AssistedCombat.GetRotationSpells)
+            if okF and rotF then
+                for _, sid in ipairs(rotF) do
+                    local rslot = GetRealSlot(sid)
+                    if rslot and IsUsableAction(rslot) then
+                        spellID = sid
+                        break
+                    end
+                end
+            end
+        end
+        if not spellID then
+            Log("No active suggestion found")
+            return nil, nil
+        end
     end
 
     -- Find a regular action bar slot for this spell so we can do
@@ -1380,7 +1401,7 @@ end
 
 -- Returns the first regular action bar slot for a spellID.
 -- Used for range checks and keybind lookups on secondary rotation spells.
-local function GetRealSlot(spellID)
+GetRealSlot = function(spellID)
     local slotList = C_ActionBar.FindSpellActionButtons(spellID)
     if slotList then
         for _, slot in ipairs(slotList) do
