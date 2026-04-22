@@ -1449,7 +1449,7 @@ local function GetSuggestionQueue(n)
                     local rslot, effectiveID = resolveSecondary(sid)
                     -- Dedup against primaryID using the effective (cast) ID, not the base ID.
                     -- GetRotationSpells returns base IDs; primaryID is an override ID.
-                    if effectiveID ~= primaryID and not IsSpellOnCooldown(sid) then
+                    if effectiveID ~= primaryID and not IsSpellOnCooldown(sid) and rslot and IsUsableAction(rslot) then
                         if effectiveID ~= sid and lastOverrideLogID[sid] ~= effectiveID then
                             DLog("OVERRIDE", string.format("secondary spellID %d → %d via slot %d", sid, effectiveID, rslot))
                             lastOverrideLogID[sid] = effectiveID
@@ -1468,7 +1468,7 @@ local function GetSuggestionQueue(n)
                     if queueCount >= n then break end
                     if not dbChar.ignoredSpells[sid] and IsPlayerSpell(sid) then
                         local rslot, effectiveID = resolveSecondary(sid)
-                        if effectiveID ~= primaryID and IsSpellOnCooldown(sid) then
+                        if effectiveID ~= primaryID and IsSpellOnCooldown(sid) and rslot and IsUsableAction(rslot) then
                             queueCount = queueCount + 1
                             queueCache[queueCount].spellID        = sid
                             queueCache[queueCount].realSlotID     = rslot
