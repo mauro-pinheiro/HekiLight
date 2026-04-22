@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this addon does
 
-HekiLight is a World of Warcraft addon (Lua + TOC) for **Midnight 12.0+** (`## Interface: 120001`). It reads Blizzard's built-in **Rotation Assistant** and re-displays the suggested spell as a movable, skinnable icon overlay.
+HekiLight is a World of Warcraft addon (Lua + TOC) for **Midnight 12.0+** (`## Interface: 120005`). It reads Blizzard's built-in **Rotation Assistant** and re-displays the suggested spell as a movable, skinnable icon overlay.
 
 There is **no build system, no package manager, no test suite, and no linter**. "Running" the addon means loading it inside WoW. Reload with `/reload` in-game after changing any Lua file.
 
@@ -13,7 +13,7 @@ There is **no build system, no package manager, no test suite, and no linter**. 
 ```
 HekiLight.toc   — load order: Locale.lua then HekiLight.lua
 Locale.lua      — HekiLightLocale global; identity-fallback metatable; ptBR block
-HekiLight.lua   — everything else; ~2400 lines, sectioned by banner comments
+HekiLight.lua   — everything else; ~2476 lines, sectioned by banner comments
 ```
 
 Sections in `HekiLight.lua` (in order):
@@ -54,7 +54,9 @@ Returns `spellID, realSlotID`:
 
 `realSlotID` is a **regular** action bar slot for the same spell (not an RA slot) — needed for `IsActionInRange` and keybind lookup because RA slots are taint-protected.
 
-`GetSuggestionQueue(n)` builds up to `n` entries using `GetActiveSuggestion()` for slot 1, then `C_AssistedCombat.GetRotationSpells()` for slots 2–n. Two-pass: off-cooldown spells fill first, then on-CD spells (displayed greyed out).
+`resolveSecondary(sid)` wraps `GetRealSlot(sid)` and then reads `GetActionInfo(rslot)` (pcall-guarded) to resolve talent overrides — e.g. base Death and Decay resolves to Defile's spellID when talented. Returns `rslot, effectiveID`. Used by `GetSuggestionQueue` for all secondary slots so dedup and icon display are override-aware.
+
+`GetSuggestionQueue(n)` builds up to `n` entries using `GetActiveSuggestion()` for slot 1, then `C_AssistedCombat.GetRotationSpells()` for slots 2–n. Two-pass: off-cooldown spells fill first, then on-CD spells (displayed greyed out). Both passes guard with `rslot and IsUsableAction(rslot)` to exclude form-restricted spells (e.g. Cat Form spells when not in Cat Form). A session-level copy of the queue is kept in `cachedRotSpells` for the Ignored Spells dropdown.
 
 ## SavedVariables pattern
 
@@ -127,19 +129,11 @@ Two levels:
 
 ```
 docs/prd/PRD.md          — full product requirements (FRs, NFRs, constraints, roadmap)
-docs/epics/EPIC-{1-4}.md — per-epic goals, stories, ADRs, and acceptance criteria
+docs/epics/EPIC-{n}.md   — per-epic goals, stories, ADRs, and acceptance criteria
 docs/stories/{n}.{m}.story.md — individual story files with AC and implementation notes
 ```
 
-All epics (1–4) are **Done**. EPIC-5 (Correctness Hardening) is **Planned** — see open bugs below.
-
-## Known open bugs (targets for EPIC-5)
-
-| Bug | Location | Priority |
-|-----|----------|----------|
-| Secondary slot deduplication broken by override | `GetSuggestionQueue` — `primaryID` is override ID; `GetRotationSpells()` returns base IDs; `sid ~= primaryID` misses match | High |
-| `IsActionInRange` not pcall-guarded | `Refresh` — `C_ActionBar.IsActionInRange(rslot)` at ~line 1743 lacks pcall; could taint on unexpected slot type | Medium |
-| `GetRealSlot` not called for secondary spells | `GetSuggestionQueue` — secondary spells from `GetRotationSpells()` are base IDs; `FindSpellActionButtons(baseID)` may fail if slot indexed under override ID | Medium |
+EPICs 1–7 are **Done**.
 
 Do **not** add `C_CooldownViewer` calls — permanently off-limits, causes combat taint (ADR-6).
 
@@ -158,6 +152,7 @@ C_Spell.GetSpellCooldown(spellID)                  -- cooldown (pcall)
 GetSpellBaseCooldown(spellID)                      -- base CD in ms; >1500 = real CD not GCD
 C_SpellActivationOverlay.IsSpellOverlayed(spellID) -- proc glow active?
 IsPlayerSpell(spellID)                             -- filter unlearned spells
+IsUsableAction(slotID)                             -- false if form/stance requirement unmet; used to filter secondary slots
 GetCVarBool("assistedCombatHighlight")             -- Assisted Highlight feature enabled?
 Settings.RegisterCanvasLayoutCategory(panel, name)
 Settings.RegisterCanvasLayoutSubcategory(parent, panel, name)
