@@ -1,0 +1,6 @@
+# Collapse documentation in GitHub PR diffs — reviewers rarely need to read
+# these line-by-line; they can expand individually if needed.
+docs/stories/*.md linguist-generated=true
+docs/epics/*.md   linguist-generated=true
+docs/prd/*.md     linguist-generated=true
+ADR.md            linguist-generated=true
