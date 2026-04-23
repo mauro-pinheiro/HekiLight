@@ -1,6 +1,6 @@
 # EPIC-8: Addon Branding & UI Polish
 
-**Status:** InProgress
+**Status:** Done
 **Goal:** Give HekiLight a consistent visual identity across all WoW UI surfaces where addons appear — the AddOn list icon, the minimap button icon, and the minimap button tooltip.
 
 ## Motivation
