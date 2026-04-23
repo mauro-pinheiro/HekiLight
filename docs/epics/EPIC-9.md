@@ -1,6 +1,6 @@
 # EPIC-9: Proc Slot Reliability
 
-**Status:** InProgress
+**Status:** Done
 **Goal:** Ensure the proc alert slot only shows spells that are actually on the player's action bar, eliminating phantom-spell appearances on specs like Marksman Hunter.
 
 ## Motivation
@@ -13,8 +13,8 @@ The keybind gate (`GetSpellKeybind(spellID) != ""`) is the correct proxy for "sp
 
 | Story | Title | Status |
 |-------|-------|--------|
-| 9.1 | Proc Slot: Require Keybind Before Showing | Ready for Review |
-| 9.2 | Proc Slot: Hide When Spell Is On Cooldown | Ready |
+| 9.1 | Proc Slot: Require Keybind Before Showing | Done |
+| 9.2 | Proc Slot: Hide When Spell Is On Cooldown | Done |
 
 ## Out of Scope
 
